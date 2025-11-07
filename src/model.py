@@ -51,9 +51,9 @@ class EarlyFusionQA(nn.Module):
         self.text_encoder = AutoModel.from_pretrained(
             text_model_name,
             use_auth_token=os.getenv("HUGGINGFACE_TOKEN", None),
-            trust_remote_code=True,
-            ignore_chat_template_errors=True
+            trust_remote_code=True
         )
+
         self.text_pooling = text_pooling
 
         # --- Temporal aggregation for video ---
