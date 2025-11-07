@@ -16,7 +16,8 @@ from constants import DATA_JSON
 APPEARANCE_DIR = "features/appearance"
 MOTION_DIR = "features/motion"
 # train.py
-MODEL_TEXT = "vinai/phobert-base"
+MODEL_TEXT = "vinai/phobert-base-v2"
+
 BATCH_SIZE = 8
 MAX_LEN = 64
 LR = 2e-5
@@ -65,7 +66,12 @@ def train():
     seed_everything()
 
     # tokenizer + dataset
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_TEXT)
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_TEXT,
+        use_auth_token=os.getenv("HUGGINGFACE_TOKEN"),
+        trust_remote_code=True,
+    )
+
     full_ds = FeatureVideoQADataset(
         DATA_JSON, APPEARANCE_DIR, MOTION_DIR,
         tokenizer_name=MODEL_TEXT, max_len=MAX_LEN
