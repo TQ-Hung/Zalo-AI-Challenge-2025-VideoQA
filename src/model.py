@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 from transformers import AutoModel
-
+import os
 
 # --- Temporal Aggregation Module ---
 class TemporalAggregator(nn.Module):
@@ -48,7 +48,12 @@ class EarlyFusionQA(nn.Module):
                  text_pooling="cls"):
         super().__init__()
         # --- Text Encoder ---
-        self.text_encoder = AutoModel.from_pretrained(text_model_name, return_dict=True)
+        self.text_encoder = AutoModel.from_pretrained(
+            text_model_name,
+            use_auth_token=os.getenv("HUGGINGFACE_TOKEN", None),
+            trust_remote_code=True,
+            ignore_chat_template_errors=True
+        )
         self.text_pooling = text_pooling
 
         # --- Temporal aggregation for video ---

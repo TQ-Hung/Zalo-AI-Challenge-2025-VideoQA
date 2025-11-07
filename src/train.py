@@ -66,12 +66,17 @@ def train():
     seed_everything()
 
     # tokenizer + dataset
+    # tokenizer = AutoTokenizer.from_pretrained(
+    #     MODEL_TEXT,
+    #     use_auth_token=os.getenv("HUGGINGFACE_TOKEN"),
+    #     trust_remote_code=True,
+    # )
     tokenizer = AutoTokenizer.from_pretrained(
         MODEL_TEXT,
-        use_auth_token=os.getenv("HUGGINGFACE_TOKEN"),
+        use_auth_token=os.getenv("HUGGINGFACE_TOKEN", None),
         trust_remote_code=True,
+        ignore_chat_template_errors=True
     )
-
     full_ds = FeatureVideoQADataset(
         DATA_JSON, APPEARANCE_DIR, MOTION_DIR,
         tokenizer_name=MODEL_TEXT, max_len=MAX_LEN
@@ -149,7 +154,7 @@ def train():
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=1, verbose=True)
 
     scaler = GradScaler(enabled=USE_FP16)
-
+    
     best_val = 0.0
     epochs_no_improve = 0
     os.makedirs(OUTPUT_DIR, exist_ok=True)
