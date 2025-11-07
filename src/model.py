@@ -3,13 +3,14 @@ import torch
 import torch.nn as nn
 from transformers import AutoModel
 
-# src/model.py
-import torch
-import torch.nn as nn
-from transformers import AutoModel
 
+# --- Temporal Aggregation Module ---
 class TemporalAggregator(nn.Module):
-    def __init__(self, in_dim=2048, hidden_dim=512):
+    """
+    Áp dụng cho chuỗi frame (appearance hoặc motion) để gộp thông tin theo thời gian.
+    Gồm: Linear giảm chiều → BiGRU → Attention pooling
+    """
+    def __init__(self, in_dim=768, hidden_dim=512):
         super().__init__()
         self.proj = nn.Linear(in_dim, hidden_dim)
         self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True, bidirectional=True)
@@ -28,37 +29,31 @@ class TemporalAggregator(nn.Module):
         pooled = torch.sum(out * attn_weight, dim=1)
         return pooled  # (B, hidden_dim*2)
 
+
+# --- Main Early Fusion QA Model ---
 class EarlyFusionQA(nn.Module):
     """
-    EarlyFusionQA + Temporal Aggregation (BiGRU)
-    - Text: BERT encoder -> pooled representation
-    - Video: BiGRU over frame sequences (appearance + motion)
-    - Fusion: gated residual + transformer fusion
+    EarlyFusionQA + Temporal Aggregation (BiGRU + Attention)
+    - Text: Transformer encoder (PhoBERT, etc.)
+    - Video: DINOv2 (appearance) + VideoMAE (motion)
+    - Fusion: Gated residual + Transformer fusion
     """
-    def __init__(self, 
+    def __init__(self,
                  text_model_name="bert-base-multilingual-cased",
-                 video_dim=2048,
+                 video_dim=768,         # ✅ đổi từ 2048 -> 768
                  text_dim=768,
                  hidden_dim=512,
                  fusion_dim=512,
                  dropout=0.2,
                  text_pooling="cls"):
         super().__init__()
+        # --- Text Encoder ---
         self.text_encoder = AutoModel.from_pretrained(text_model_name, return_dict=True)
         self.text_pooling = text_pooling
-        self.video_dropout = nn.Dropout(dropout)
 
-        # --- Temporal projection + GRU for video ---
-        self.video_proj = nn.Linear(video_dim, hidden_dim)
-        self.video_gru = nn.GRU(
-            input_size=hidden_dim,
-            hidden_size=hidden_dim // 2,
-            num_layers=1,
-            batch_first=True,
-            bidirectional=True
-        )
-        self.temporal_agg = TemporalAggregator(in_dim=hidden_dim, hidden_dim=hidden_dim // 2)
-        # self.video_norm = nn.LayerNorm(hidden_dim)
+        # --- Temporal aggregation for video ---
+        self.temporal_agg = TemporalAggregator(in_dim=video_dim, hidden_dim=hidden_dim // 2)
+        self.video_dropout = nn.Dropout(dropout)
 
         # --- Text projection ---
         self.text_proj = nn.Sequential(
@@ -68,15 +63,20 @@ class EarlyFusionQA(nn.Module):
             nn.Dropout(dropout)
         )
 
-        # --- Fusion ---
+        # --- Fusion module ---
         self.gate = nn.Linear(hidden_dim * 2, hidden_dim)
         self.fusion_norm = nn.LayerNorm(hidden_dim)
 
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_dim, nhead=8, dim_feedforward=hidden_dim * 2, dropout=dropout, batch_first=True
+            d_model=hidden_dim,
+            nhead=8,
+            dim_feedforward=hidden_dim * 2,
+            dropout=dropout,
+            batch_first=True
         )
         self.fusion_transformer = nn.TransformerEncoder(encoder_layer, num_layers=1)
 
+        # --- Classification head ---
         self.classifier = nn.Sequential(
             nn.Linear(hidden_dim, fusion_dim),
             nn.ReLU(),
@@ -85,6 +85,7 @@ class EarlyFusionQA(nn.Module):
         )
 
     def pool_text(self, out, mask):
+        """Lấy embedding cho câu hỏi + đáp án"""
         if hasattr(out, "pooler_output") and out.pooler_output is not None:
             return out.pooler_output
         if self.text_pooling == "cls":
@@ -97,21 +98,21 @@ class EarlyFusionQA(nn.Module):
 
     def forward(self, input_ids, attention_mask, appearance, motion):
         """
-        appearance: (B, T_app, 2048)
-        motion: (B, T_mot, 2048)
+        appearance: (B, T_app, 768)
+        motion: (B, T_mot, 768)
         """
         B, C, L = input_ids.shape
         device = input_ids.device
 
-        # --- Text encoding ---
+        # --- Text Encoding ---
         flat_input_ids = input_ids.view(B * C, L)
         flat_attention_mask = attention_mask.view(B * C, L)
         text_out = self.text_encoder(input_ids=flat_input_ids, attention_mask=flat_attention_mask)
         pooled = self.pool_text(text_out, flat_attention_mask)
         text_feat = self.text_proj(pooled)  # (B*C, hidden_dim)
 
-        # --- Video temporal encoding ---
-        # Combine app & motion sequences (pad shorter one)
+        # --- Video Temporal Encoding ---
+        # Pad 2 chuỗi cho cùng độ dài
         T = max(appearance.size(1), motion.size(1))
         if appearance.size(1) < T:
             pad = torch.zeros(B, T - appearance.size(1), appearance.size(2), device=device)
@@ -120,11 +121,9 @@ class EarlyFusionQA(nn.Module):
             pad = torch.zeros(B, T - motion.size(1), motion.size(2), device=device)
             motion = torch.cat([motion, pad], dim=1)
 
-        video_seq = (appearance + motion) / 2  # simple fusion
-        video_seq = self.video_proj(video_seq)
-        video_out, _ = self.video_gru(video_seq)
-        video_feat = self.temporal_agg(video_out)
-
+        # ✅ Trung bình appearance & motion
+        video_seq = (appearance + motion) / 2
+        video_feat = self.temporal_agg(video_seq)  # (B, hidden_dim)
         video_feat = self.video_dropout(video_feat)
         video_feat_rep = video_feat.unsqueeze(1).repeat(1, C, 1).view(B * C, -1)
 

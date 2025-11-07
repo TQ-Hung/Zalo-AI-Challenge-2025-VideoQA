@@ -1,3 +1,4 @@
+
 # src/dataset_features.py
 import os
 import json
@@ -5,7 +6,9 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
+import torch.nn.functional as F
 
+# --- Hàm pad chuỗi feature theo chiều thời gian ---
 def pad_sequence_feats(feat_list):
     """
     feat_list: list of tensors có shape (T_i, D)
@@ -21,14 +24,15 @@ def pad_sequence_feats(feat_list):
         padded[i, :length] = f
     return padded
 
+
 class FeatureVideoQADataset(Dataset):
     """
     Loads:
-      - appearance .npy -> shape (T_app, 2048)
-      - motion .npy     -> shape (T_mot, 2048)
+      - appearance .npy -> shape (T_app, 768)
+      - motion .npy     -> shape (T_mot, 768)
     Returns per sample:
-      - app_feat_mean: torch.FloatTensor (2048,)
-      - mot_feat_mean: torch.FloatTensor (2048,)
+      - app_feat: torch.FloatTensor (T_app, 768)
+      - mot_feat: torch.FloatTensor (T_mot, 768)
       - input_ids: torch.LongTensor (num_choices, L)
       - attention_mask: torch.LongTensor (num_choices, L)
       - label: int (0..num_choices-1) or -1 if not provided
@@ -50,10 +54,13 @@ class FeatureVideoQADataset(Dataset):
     def _load_npy_safe(self, path):
         if not os.path.exists(path):
             return None
-        arr = np.load(path)
-        if arr is None or arr.size == 0:
+        try:
+            arr = np.load(path)
+            if arr is None or arr.size == 0:
+                return None
+            return arr
+        except Exception:
             return None
-        return arr
 
     def __getitem__(self, idx):
         it = self.items[idx]
@@ -64,19 +71,21 @@ class FeatureVideoQADataset(Dataset):
         app_arr = self._load_npy_safe(app_path)
         mot_arr = self._load_npy_safe(mot_path)
 
+        # fallback nếu file lỗi hoặc thiếu
         if app_arr is None:
-            app_arr = np.zeros((1, 2048), dtype=np.float32)
+            app_arr = np.zeros((1, 768), dtype=np.float32)
         if mot_arr is None:
-            mot_arr = np.zeros((1, 2048), dtype=np.float32)
+            mot_arr = np.zeros((1, 768), dtype=np.float32)
 
         app_feat = torch.tensor(app_arr, dtype=torch.float32)
-        mot_feat = torch.tensor(mot_arr, dtype=torch.float32)   
+        mot_feat = torch.tensor(mot_arr, dtype=torch.float32)
 
+        # tokenize câu hỏi + đáp án
         question = it["question"]
         choices = it["choices"]
         texts = [question + " " + c for c in choices]
         enc = self.tokenizer(texts, padding="max_length", truncation=True,
-                            max_length=self.max_len, return_tensors="pt")
+                             max_length=self.max_len, return_tensors="pt")
 
         label = -1
         ans = it.get("answer", None)
@@ -85,6 +94,7 @@ class FeatureVideoQADataset(Dataset):
                 if ans.strip() == c.strip():
                     label = i
                     break
+
         if self.is_test:
             return {
                 "ids": it["id"],
@@ -105,29 +115,8 @@ class FeatureVideoQADataset(Dataset):
             }
 
 
-import torch
-import torch.nn.functional as F
-
-# --- Hàm pad chuỗi feature theo chiều thời gian ---
-def pad_sequence_feats(feat_list):
-    """
-    feat_list: list of tensors có shape (T_i, D)
-    Mục tiêu: pad tất cả lên T_max theo batch để có (B, T_max, D)
-    """
-    max_len = max(f.shape[0] for f in feat_list)
-    feat_dim = feat_list[0].shape[1]
-    batch_size = len(feat_list)
-
-    padded = torch.zeros((batch_size, max_len, feat_dim), dtype=torch.float32)
-    for i, f in enumerate(feat_list):
-        length = f.shape[0]
-        padded[i, :length] = f
-    return padded
-
-
 # --- Collate function cho train/val ---
 def collate_fn(batch):
-    # Nếu batch của test set (không có 'choices') thì xử lý riêng
     if "choices" not in batch[0]:
         # Inference/test mode
         input_ids = torch.stack([b["input_ids"] for b in batch])
@@ -143,7 +132,6 @@ def collate_fn(batch):
             "motion_feats": motion_feats,
         }
 
-    # --- Training/validation mode ---
     batch = [b for b in batch if "choices" in b and len(b["choices"]) > 0]
     if len(batch) == 0:
         return None
@@ -165,16 +153,16 @@ def collate_fn(batch):
     input_ids = torch.stack(input_ids, dim=0)
     attention_masks = torch.stack(attention_masks, dim=0)
 
-    # ✅ Pad theo chiều thời gian cho video features
+    # ✅ Pad theo chiều thời gian cho video features (768 dim)
     appearance_feats = pad_sequence_feats([b["appearance"] for b in batch])
     motion_feats = pad_sequence_feats([b["motion"] for b in batch])
     labels = torch.tensor([b["label"] for b in batch], dtype=torch.long)
 
     return {
-        "input_ids": input_ids,            # (B, C, L)
-        "attention_mask": attention_masks, # (B, C, L)
-        "appearance_feats": appearance_feats,  # (B, T_app_max, 2048)
-        "motion_feats": motion_feats,          # (B, T_mot_max, 2048)
+        "input_ids": input_ids,
+        "attention_mask": attention_masks,
+        "appearance_feats": appearance_feats,  # (B, T_app, 768)
+        "motion_feats": motion_feats,          # (B, T_mot, 768)
         "labels": labels,
     }
 
