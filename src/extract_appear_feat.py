@@ -14,9 +14,21 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --- Model & Processor ---
 HF_TOKEN = os.environ.get("HUGGINGFACE_TOKEN")
-model = AutoModel.from_pretrained("facebook/dinov2-base", token=HF_TOKEN)
-processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base", token=HF_TOKEN)
+model = AutoModel.from_pretrained(
+    "facebook/dinov2-base",
+    token=os.getenv("HUGGINGFACE_TOKEN")
+).to(DEVICE)
+
+if torch.cuda.device_count() > 1:
+    print(f"✅ Using {torch.cuda.device_count()} GPUs for appearance extraction")
+    model = nn.DataParallel(model)
+
+processor = AutoImageProcessor.from_pretrained(
+    "facebook/dinov2-base",
+    token=os.getenv("HUGGINGFACE_TOKEN")
+)
 model.eval()
+
 
 # --- Utility: đọc khung hình đều nhau ---
 def read_frames(video_path, num=16):
