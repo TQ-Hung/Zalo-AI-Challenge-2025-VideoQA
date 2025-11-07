@@ -3,6 +3,7 @@ import os
 import torch
 import cv2
 import numpy as np
+from torch import nn
 from tqdm import tqdm
 from transformers import AutoImageProcessor, AutoModel
 
