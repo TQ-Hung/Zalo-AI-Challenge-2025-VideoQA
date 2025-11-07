@@ -9,7 +9,7 @@ from model import EarlyFusionQA
 from torch.utils.data import DataLoader
 
 # ----- Config -----
-MODEL_TEXT = "vinai/phobert-base"
+MODEL_TEXT = "vinai/phobert-base-v2"
 APPEARANCE_DIR = "features_test/appearance"
 MOTION_DIR = "features_test/motion"
 CHECKPOINT = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/checkpoints/best.pt"
@@ -30,7 +30,13 @@ def inference():
 
     # Load tokenizer + dataset
     print("Preparing test dataset ...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_TEXT)
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_TEXT,
+        use_auth_token=os.getenv("HUGGINGFACE_TOKEN", None),
+        trust_remote_code=True,
+        ignore_chat_template_errors=True
+    )
+
     test_ds = FeatureVideoQADataset(TEST_JSON, APPEARANCE_DIR, MOTION_DIR,
                                     tokenizer_name=MODEL_TEXT, max_len=64, is_test=True)
     test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False,
