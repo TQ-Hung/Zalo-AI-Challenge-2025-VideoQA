@@ -18,7 +18,7 @@ MOTION_DIR = "features/motion"
 # train.py
 MODEL_TEXT = "vinai/phobert-base-v2"
 
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 MAX_LEN = 64
 LR = 2e-5
 EPOCHS = 20
@@ -30,7 +30,7 @@ SEED = 42
 USE_FP16 = True         # enable AMP
 ACCUM_STEPS = 2         # gradient accumulation
 UNFREEZE_LAST_N = 3     # unfreeze last N layers of BERT
-EARLYSTOP_PATIENCE = 3  # early stopping patience (epochs)
+# EARLYSTOP_PATIENCE = 3  # early stopping patience (epochs)
 CLIP_NORM = 1.0         # gradient clipping
 NUM_WORKERS = 4
 # ----------------------------
