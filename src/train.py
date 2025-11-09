@@ -5,7 +5,7 @@ import torch
 import random
 import numpy as np
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer
+from transformers import RobertaTokenizer
 from datasets import FeatureVideoQADataset, collate_fn
 from model import CrossModalQA as EarlyFusionQA
 from torch.cuda.amp import autocast, GradScaler
@@ -71,12 +71,11 @@ def train():
     #     use_auth_token=os.getenv("HUGGINGFACE_TOKEN"),
     #     trust_remote_code=True,
     # )
-    tokenizer = AutoTokenizer.from_pretrained(
-        MODEL_TEXT,
-        use_auth_token=os.getenv("HUGGINGFACE_TOKEN", None),
-        trust_remote_code=True,
-        ignore_chat_template_errors=True
+    tokenizer = RobertaTokenizer.from_pretrained(
+        "vinai/phobert-base-v2",
+        use_fast=False
     )
+
     full_ds = FeatureVideoQADataset(
         DATA_JSON, APPEARANCE_DIR, MOTION_DIR,
         tokenizer_name=MODEL_TEXT, max_len=MAX_LEN

@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 from transformers import AutoModel
-
+from transformers import RobertaTokenizer
 class CrossModalQA(nn.Module):
     def __init__(self, text_model_name="vinai/phobert-base-v2",
                  video_feat_dim=768, text_dim=768, hidden_dim=512,
