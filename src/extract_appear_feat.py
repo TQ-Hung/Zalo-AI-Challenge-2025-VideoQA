@@ -6,6 +6,8 @@ import numpy as np
 from torch import nn
 from tqdm import tqdm
 from transformers import AutoImageProcessor, AutoModel
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 # --- Config ---
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -32,7 +34,7 @@ model.eval()
 
 
 # --- Utility: đọc khung hình đều nhau ---
-def read_frames(video_path, num=16):
+def read_frames(video_path, num=16, augment=False):
     cap = cv2.VideoCapture(video_path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if total <= 0:
@@ -48,12 +50,24 @@ def read_frames(video_path, num=16):
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frames.append(frame)
     cap.release()
+    if augment:  # Chỉ aug lúc train
+        transform = A.Compose([
+            A.RandomBrightnessContrast(p=0.5),
+            A.HorizontalFlip(p=0.5),
+            A.GaussianBlur(p=0.3),
+            ToTensorV2()  # Nếu cần tensor
+        ])
+        augmented_frames = []
+        for frame in frames:
+            augmented = transform(image=frame)['image']
+            augmented_frames.append(augmented.numpy())  # Quay về numpy nếu cần
+        frames = augmented_frames
     return frames
 
 # --- Trích xuất đặc trưng ---
 @torch.inference_mode()
 def extract_appearance(video_path):
-    frames = read_frames(video_path, num=16)
+    frames = read_frames(video_path, num=16, augment=True)
     if len(frames) == 0:
         return None
     inputs = processor(images=frames, return_tensors="pt").to(DEVICE)

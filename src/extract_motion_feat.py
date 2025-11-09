@@ -15,7 +15,7 @@ processor = VideoMAEFeatureExtractor.from_pretrained("MCG-NJU/videomae-base-fine
 model.eval()
 
 # --- Utility ---
-def read_frames(video_path, num=16):
+def read_frames(video_path, num=16, augment = False):
     cap = cv2.VideoCapture(video_path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     idxs = np.linspace(0, total - 1, num).astype(int)
@@ -27,10 +27,22 @@ def read_frames(video_path, num=16):
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frames.append(frame)
     cap.release()
+    if augment:  # Chỉ aug lúc train
+        transform = A.Compose([
+            A.RandomBrightnessContrast(p=0.5),
+            A.HorizontalFlip(p=0.5),
+            A.GaussianBlur(p=0.3),
+            ToTensorV2()  # Nếu cần tensor
+        ])
+        augmented_frames = []
+        for frame in frames:
+            augmented = transform(image=frame)['image']
+            augmented_frames.append(augmented.numpy())  # Quay về numpy nếu cần
+        frames = augmented_frames
     return frames
 
 def extract_motion(video_path):
-    frames = read_frames(video_path, num=16)
+    frames = read_frames(video_path, num=16, augment=True)
     inputs = processor(frames, return_tensors="pt").to(DEVICE)
     with torch.no_grad():
         outputs = model(**inputs)
