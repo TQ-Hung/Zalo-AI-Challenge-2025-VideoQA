@@ -1,5 +1,6 @@
 # src/train.py
 import os
+import re
 import math
 import torch
 import random
@@ -11,7 +12,7 @@ from model import CrossModalQA as EarlyFusionQA
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 from constants import DATA_JSON
-
+from sklearn.model_selection import train_test_split
 # ---------- Config ----------
 APPEARANCE_DIR = "features/appearance"
 MOTION_DIR = "features/motion"
@@ -34,7 +35,17 @@ EARLYSTOP_PATIENCE = 7  # early stopping patience (epochs)
 CLIP_NORM = 1.0         # gradient clipping
 NUM_WORKERS = 4
 # ----------------------------
-
+def get_question_type(question: str) -> str:
+    q = question.lower()
+    if any(k in q for k in ["biển báo", "tốc độ", "cấm", "hiệu lệnh", "đèn"]):
+        return "sign_signal"
+    elif any(k in q for k in ["rẽ", "xi-nhan", "đổi làn", "vượt", "dừng"]):
+        return "action"
+    elif any(k in q for k in ["phía trước", "bên trái", "bên phải", "phía sau"]):
+        return "position"
+    else:
+        return "other"
+    
 def seed_everything(seed=SEED):
     random.seed(seed)
     np.random.seed(seed)
@@ -81,14 +92,19 @@ def train():
         DATA_JSON, APPEARANCE_DIR, MOTION_DIR,
         tokenizer_name=MODEL_TEXT, max_len=MAX_LEN
     )
-
-    n = len(full_ds)
-    n_val = max(1, int(n * VALID_SPLIT))
-    indices = list(range(n))
-    random.shuffle(indices)
-    val_idx = indices[:n_val]
-    train_idx = indices[n_val:]
-
+    labels_for_stratify = []
+    for item in full_ds.items:
+        q = item["question"]
+        label = get_question_type(q)
+        # Kết hợp với answer để tăng độ phân biệt
+        ans = item.get("answer", "")
+        labels_for_stratify.append(f"{label}_{ans[:10]}")
+    train_idx, val_idx = train_test_split(
+            range(len(full_ds)),
+            test_size=VALID_SPLIT,
+            stratify=labels_for_stratify,
+            random_state=SEED
+        )
     from torch.utils.data import Subset
     train_ds = Subset(full_ds, train_idx)
     val_ds = Subset(full_ds, val_idx)

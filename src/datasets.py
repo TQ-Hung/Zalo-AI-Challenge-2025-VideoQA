@@ -64,7 +64,9 @@ class FeatureVideoQADataset(Dataset):
 
     def __getitem__(self, idx):
         it = self.items[idx]
+        video_path = it["video_path"]
         vid_basename = os.path.splitext(os.path.basename(it["video_path"]))[0]
+        
         app_path = os.path.join(self.appearance_dir, f"{vid_basename}.npy")
         mot_path = os.path.join(self.motion_dir, f"{vid_basename}.npy")
 
