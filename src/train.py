@@ -30,7 +30,7 @@ SEED = 42
 USE_FP16 = True         # enable AMP
 ACCUM_STEPS = 2         # gradient accumulation
 UNFREEZE_LAST_N = 3     # unfreeze last N layers of BERT
-# EARLYSTOP_PATIENCE = 3  # early stopping patience (epochs)
+EARLYSTOP_PATIENCE = 7  # early stopping patience (epochs)
 CLIP_NORM = 1.0         # gradient clipping
 NUM_WORKERS = 4
 # ----------------------------
