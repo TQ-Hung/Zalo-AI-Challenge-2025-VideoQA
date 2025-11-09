@@ -7,7 +7,7 @@ import numpy as np
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 from datasets import FeatureVideoQADataset, collate_fn
-from model import EarlyFusionQA
+from model import CrossModalQA as EarlyFusionQA
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 from constants import DATA_JSON
