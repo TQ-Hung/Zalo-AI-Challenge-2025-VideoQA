@@ -6,8 +6,8 @@ from transformers import AutoModel
 
 class CrossModalQA(nn.Module):
     def __init__(self, text_model_name="vinai/phobert-base-v2",
-                 video_feat_dim=2048, text_dim=768, hidden_dim=512,
-                 n_heads=8, n_layers=3, dropout=0.2):
+             video_feat_dim=768, text_dim=768, hidden_dim=512,
+             n_heads=8, n_layers=3, dropout=0.2, text_pooling="cls"):
         super().__init__()
         self.text_encoder = AutoModel.from_pretrained(text_model_name, return_dict=True)
 
