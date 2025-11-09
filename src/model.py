@@ -76,7 +76,8 @@ class CrossModalQA(nn.Module):
 
         # --- combine text tokens and video tokens into single sequence ---
         # concat along sequence dimension: [text_tokens ; video_tokens]
-        fused_seq = torch.cat([tok_emb, vid_tokens_rep], dim=1)  # (B*C, L+T, hidden_dim)
+        vid_tokens_rep = vid_tokens_rep.unsqueeze(1)  # (B*C, 1, hidden_dim)
+        fused_seq = torch.cat([tok_emb, vid_tokens_rep], dim=1)  # (B*C, L+1, hidden_dim)
 
         # optionally create attention mask for cross transformer:
         # text_mask + video_mask (video masked ones are ones)
