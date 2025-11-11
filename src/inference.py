@@ -1,6 +1,5 @@
 # src/inference.py
-# PHIÊN BẢN CUỐI CÙNG – TỰ ĐỘNG EXTRACT + ĐÚNG KEY "id" + TTA + ENSEMBLE
-# ĐÃ TEST THÀNH CÔNG 00:17 12/11/2025 → public test ~0.73+
+# PHIÊN BẢN CUỐI CÙNG – FIX MOTION ERROR + TỰ ĐỘNG EXTRACT + TTA + ENSEMBLE
 import os
 import json
 import torch
@@ -18,7 +17,7 @@ import cv2
 MODEL_TEXT = "vinai/phobert-base-v2"
 CHECKPOINT = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/checkpoints/best.pt"
 TEST_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/public_test/public_test.json"
-VIDEO_DIR = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/public_test/videos"
+VIDEO_DIR = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/public_test/public_test/videos"
 OCR_DIR = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/features_v2/ocr"
 
 BATCH_SIZE = 16
@@ -31,6 +30,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 resnet = models.resnet50(weights="IMAGENET1K_V1").to(DEVICE)
 resnet.eval()
 resnet_fc = torch.nn.Sequential(*list(resnet.children())[:-1])
+
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -61,7 +61,7 @@ def extract_motion(video_path):
     ret, prev = cap.read()
     if not ret:
         cap.release()
-        return np.zeros((8, 2048))
+        return np.zeros((1, 2048))  # fallback
     prev_gray = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY)
     motion_feats = []
     count = 0
@@ -72,16 +72,19 @@ def extract_motion(video_path):
         flow = cv2.calcOpticalFlowFarneback(prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
         mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
         mag = cv2.resize(mag, (224, 224))
-        mag = torch.from_numpy(mag).float().unsqueeze(0).unsqueeze(0).to(DEVICE)
-        mag = transform(mag.repeat(3, 1, 1))
+        # FIX: Đảm bảo 4D tensor
+        mag_tensor = torch.from_numpy(mag).float().unsqueeze(0).unsqueeze(0).to(DEVICE)  # (1,1,224,224)
+        mag_tensor = mag_tensor.repeat(1, 3, 1, 1)  # (1,3,224,224)
+        mag_tensor = transform(mag_tensor.squeeze(0))  # (3,224,224)
+        mag_tensor = mag_tensor.unsqueeze(0).to(DEVICE)  # (1,3,224,224)
         with torch.no_grad():
-            feat = resnet_fc(mag.unsqueeze(0)).squeeze(-1).squeeze(-1)
+            feat = resnet_fc(mag_tensor).squeeze(-1).squeeze(-1)  # (1,2048)
         motion_feats.append(feat)
         prev_gray = gray
         count += 1
     cap.release()
     if len(motion_feats) == 0:
-        return np.zeros((8, 2048))
+        return np.zeros((1, 2048))
     motion_feats = torch.stack(motion_feats).mean(0, keepdim=True).cpu().numpy()
     return motion_feats
 
@@ -90,15 +93,13 @@ class PublicTestDataset(Dataset):
     def __init__(self):
         with open(TEST_JSON, "r", encoding="utf-8") as f:
             data = json.load(f)["data"]
-        
         self.items = []
         for item in data:
             video_path = os.path.join(VIDEO_DIR, os.path.basename(item["video_path"]))
             if not os.path.exists(video_path):
                 continue
-            # KEY CHÍNH XÁC: "id" KHÔNG PHẢI "question_id"
             self.items.append({
-                "question_id": item["id"],        # SỬA TẠI ĐÂY
+                "question_id": item["id"],
                 "question": item["question"],
                 "video_path": video_path,
                 "video_id": os.path.splitext(os.path.basename(video_path))[0]
@@ -164,9 +165,11 @@ def main():
         seed_preds = []
         with torch.no_grad():
             for batch in tqdm(test_loader, desc=f"Seed {seed}"):
-                input_ids = tokenizer(
+                encoded = tokenizer(
                     batch["questions"], padding=True, truncation=True, max_length=64, return_tensors="pt"
-                ).to(DEVICE)
+                )
+                input_ids = encoded["input_ids"].to(DEVICE)
+                attention_mask = encoded["attention_mask"].to(DEVICE)
                 
                 appearance = batch["appearance"].to(DEVICE)
                 motion = batch["motion"].to(DEVICE)
@@ -176,7 +179,7 @@ def main():
                     noise = 0.02 if _ > 0 else 0.0
                     app = appearance + torch.randn_like(appearance) * noise
                     mot = motion + torch.randn_like(motion) * noise
-                    logits = model(input_ids["input_ids"], input_ids["attention_mask"], app, mot)
+                    logits = model(input_ids, attention_mask, app, mot)
                     tta_logits.append(logits)
                 
                 avg_logits = torch.stack(tta_logits).mean(0)
@@ -190,7 +193,7 @@ def main():
     id_to_label = {0: "A", 1: "B", 2: "C", 3: "D"}
     final_labels = [id_to_label[p] for p in final_preds]
     
-    # Save submission
+    # Save
     submission = [{"question_id": qid, "answer": label} 
                   for qid, label in zip([item["question_id"] for item in test_ds.items], final_labels)]
     
