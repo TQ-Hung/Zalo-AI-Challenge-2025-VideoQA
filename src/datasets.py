@@ -7,6 +7,7 @@ from transformers import AutoTokenizer
 import numpy as np
 
 # src/datasets.py – CHỈ SỬA 2 DÒNG + THÊM OCR
+
 class FeatureVideoQADataset(Dataset):
     def __init__(self, json_path, appearance_dir, motion_dir, tokenizer_name="vinai/phobert-base-v2", max_len=64):
         with open(json_path, "r", encoding="utf-8") as f:
@@ -22,7 +23,7 @@ class FeatureVideoQADataset(Dataset):
             
             if not (os.path.exists(app_path) and os.path.exists(mot_path)):
                 missing += 1
-                continue  # Bỏ qua video không có feature
+                continue
                 
             self.items.append({
                 "question": item["question"],
@@ -33,15 +34,11 @@ class FeatureVideoQADataset(Dataset):
                 "video_id": basename
             })
         
-        print(f"Loaded {len(self.items)} samples | Skipped {missing} (no features)")  # THÊM DÒNG IN
+        print(f"LOADED {len(self.items)} SAMPLES | SKIPPED {missing} (no features)")
         
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name,
-            use_auth_token=os.getenv("HUGGINGFACE_TOKEN", None),
-            trust_remote_code=True
-        )
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
         self.max_len = max_len
-        self.ocr_dir = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/features_v2/ocr"  # OCR ĐÃ CÓ
+        self.ocr_dir = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/features_v2/ocr"  # OCR bạn đã extract
 
     def __len__(self):
         return len(self.items)
