@@ -15,8 +15,8 @@ CHECKPOINT = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/checkpoints/best.pt
 TEST_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/public_test/public_test.json"
 
 # DÙNG DATASET FEATURES V2 (ĐÃ ADD Ở BƯỚC 1)
-APPEARANCE_DIR = "/kaggle/input/zalo-ai-2025-features-v2/appearance"
-MOTION_DIR = "/kaggle/input/zalo-ai-2025-features-v2/motion"
+APPEARANCE_DIR = "/kaggle/working/features/appearance"
+MOTION_DIR = "/kaggle/working/features/motion"
 OCR_DIR = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/features_v2/ocr"  # OCR bạn đã chạy
 
 BATCH_SIZE = 32
