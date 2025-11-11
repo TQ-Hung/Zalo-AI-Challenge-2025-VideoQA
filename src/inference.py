@@ -31,6 +31,7 @@ resnet = models.resnet50(weights="IMAGENET1K_V1").to(DEVICE)
 resnet.eval()
 resnet_fc = torch.nn.Sequential(*list(resnet.children())[:-1])
 
+# Transform chỉ dùng cho PIL Image → phải chuyển từ numpy → PIL
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -61,7 +62,7 @@ def extract_motion(video_path):
     ret, prev = cap.read()
     if not ret:
         cap.release()
-        return np.zeros((1, 2048))  # fallback
+        return np.zeros((1, 2048))
     prev_gray = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY)
     motion_feats = []
     count = 0
@@ -72,11 +73,11 @@ def extract_motion(video_path):
         flow = cv2.calcOpticalFlowFarneback(prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
         mag, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
         mag = cv2.resize(mag, (224, 224))
-        # FIX: Đảm bảo 4D tensor
-        mag_tensor = torch.from_numpy(mag).float().unsqueeze(0).unsqueeze(0).to(DEVICE)  # (1,1,224,224)
-        mag_tensor = mag_tensor.repeat(1, 3, 1, 1)  # (1,3,224,224)
-        mag_tensor = transform(mag_tensor.squeeze(0))  # (3,224,224)
-        mag_tensor = mag_tensor.unsqueeze(0).to(DEVICE)  # (1,3,224,224)
+        # FIX: Chuyển numpy → PIL → transform → tensor
+        mag = (mag - mag.min()) / (mag.max() - mag.min() + 1e-8) * 255
+        mag = mag.astype(np.uint8)
+        mag_pil = Image.fromarray(mag).convert("RGB")
+        mag_tensor = transform(mag_pil).unsqueeze(0).to(DEVICE)  # (1,3,224,224)
         with torch.no_grad():
             feat = resnet_fc(mag_tensor).squeeze(-1).squeeze(-1)  # (1,2048)
         motion_feats.append(feat)
