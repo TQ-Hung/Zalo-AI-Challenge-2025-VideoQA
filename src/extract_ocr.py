@@ -1,8 +1,5 @@
 # extract_ocr.py
-# PHIÊN BẢN CHUẨN NHẤT CHO KAGGLE + GIT
-# DÙNG KAGGLE SECRETS → KHÔNG LỘ TOKEN, COMMIT THOẢI MÁI
-# Thời gian: ~3-5 phút
-
+# CHUẨN 100% CHO KAGGLE – DÙNG HUGGINGFACE_TOKEN từ Secrets
 import os
 import cv2
 import json
@@ -12,15 +9,18 @@ from tqdm import tqdm
 from vietocr.tool.config import Cfg
 from vietocr.tool.predictor import Predictor
 
-# ------------------- LẤY TOKEN TỪ KAGGLE SECRETS (AN TOÀN 100%) -------------------
+# ------------------- LẤY TOKEN ĐÚNG TÊN SECRET -------------------
 try:
     from kaggle_secrets import UserSecretsClient
     user_secrets = UserSecretsClient()
-    HF_TOKEN = user_secrets.get_secret("HF_TOKEN")
+    HF_TOKEN = user_secrets.get_secret("HUGGINGFACE_TOKEN")  # ĐÚNG TÊN
     if not HF_TOKEN:
-        raise ValueError("Không tìm thấy HF_TOKEN trong Secrets!")
+        raise ValueError("HUGGINGFACE_TOKEN rỗng!")
 except Exception as e:
-    raise RuntimeError(f"Lỗi lấy token: {e}\nHãy vào Add-ons → Secrets → thêm HF_TOKEN")
+    raise RuntimeError(f"Lỗi lấy token: {e}\n"
+                       "Hãy vào Add-ons → Secrets → thêm secret với:\n"
+                       "  Label: HUGGINGFACE_TOKEN\n"
+                       "  Value: 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")
 
 from huggingface_hub import login
 login(token=HF_TOKEN)
@@ -32,9 +32,9 @@ TRAIN_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train
 OUTPUT_DIR = "features/ocr"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-print("Loading VietOCR model...")
+print("Loading VietOCR...")
 config = Cfg.load_config_from_name('vgg_transformer')
-config['weights'] = 'VietAI/vietocr_vgg_transformer'  # Repo chính thức
+config['weights'] = 'VietAI/vietocr_vgg_transformer'
 config['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
 config['predictor']['beamsearch'] = False
 config['cnn']['pretrained'] = False
@@ -104,7 +104,8 @@ for item in tqdm(data, desc="OCR"):
         f.write(ocr_text)
 
 print(f"OCR HOÀN TẤT! Đã lưu {len([f for f in os.listdir(OUTPUT_DIR) if f.endswith('.txt')])} file")
-print("Ví dụ:")
+print("Ví dụ 3 file:")
 for f in sorted(os.listdir(OUTPUT_DIR))[:3]:
-    text = open(os.path.join(OUTPUT_DIR, f), "r", encoding="utf-8").read().strip()
+    path = os.path.join(OUTPUT_DIR, f)
+    text = open(path, "r", encoding="utf-8").read().strip()
     print(f"  {f}: {text}")
