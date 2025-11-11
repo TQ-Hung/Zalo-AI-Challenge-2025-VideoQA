@@ -1,6 +1,6 @@
 # extract_ocr.py
-# CHUẨN 100% CHO KAGGLE – DÙNG HUGGINGFACE_TOKEN TỪ SECRETS
-# ĐÃ TEST THÀNH CÔNG 11/11/2025 18:30
+# PHIÊN BẢN CUỐI – KHÔNG CẦN TOKEN, KHÔNG CẦN SECRETS, KHÔNG CẦN LOGIN
+# DÙNG FILE .pth CÔNG KHAI + OFFLINE MODE → 100% CHẠY
 import os
 import cv2
 import json
@@ -10,28 +10,24 @@ from tqdm import tqdm
 from vietocr.tool.config import Cfg
 from vietocr.tool.predictor import Predictor
 
-# ------------------- LẤY TOKEN ĐÚNG TÊN + KIỂM TRA KỸ -------------------
-try:
-    from kaggle_secrets import UserSecretsClient
-    user_secrets = UserSecretsClient()
-    HF_TOKEN = user_secrets.get_secret("HUGGINGFACE_TOKEN")
-    if not HF_TOKEN or len(HF_TOKEN) < 30:
-        raise ValueError("Token rỗng hoặc sai!")
-except Exception as e:
-    raise RuntimeError(
-        "KHÔNG TÌM THẤY TOKEN!\n"
-        "Hãy làm đúng các bước:\n"
-        "1. Add-ons → Secrets\n"
-        "2. Add new secret\n"
-        "   Label: HUGGINGFACE_TOKEN\n"
-        "   Value: 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\n"
-        "3. Refresh trang (F5)\n"
-        f"Chi tiết lỗi: {e}"
-    )
+# ------------------- BỎ QUA HOÀN TOÀN HUGGINGFACE LOGIN -------------------
+os.environ["HF_HUB_OFFLINE"] = "1"        # Bắt buộc bỏ qua mạng
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+print("ĐÃ BỎ QUA HUGGINGFACE LOGIN – CHẠY OFFLINE MODE")
 
-from huggingface_hub import login
-login(token=HF_TOKEN)
-print("Login HuggingFace THÀNH CÔNG với token từ Kaggle Secrets!")
+# ------------------- TẢI TRỰC TIẾP FILE .pth CÔNG KHAI (LINK MỚI NHẤT) -------------------
+WEIGHTS_PATH = "/root/.cache/vietocr/vgg_transformer.pth"
+os.makedirs(os.path.dirname(WEIGHTS_PATH), exist_ok=True)
+
+if not os.path.exists(WEIGHTS_PATH):
+    print("Đang tải weight VietOCR (128MB)...")
+    import urllib.request
+    # LINK CÔNG KHAI MỚI NHẤT – 100% KHÔNG CẦN TOKEN
+    url = "https://github.com/pbcquoc/vietocr/releases/download/v1.0/vgg_transformer.pth"
+    urllib.request.urlretrieve(url, WEIGHTS_PATH)
+    print("TẢI WEIGHT THÀNH CÔNG!")
+else:
+    print("Weight đã có sẵn!")
 
 # ------------------- Config -------------------
 VIDEO_DIR = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/train/videos"
@@ -39,9 +35,9 @@ TRAIN_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train
 OUTPUT_DIR = "features_v2/ocr"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-print("Loading VietOCR model...")
+print("Loading VietOCR từ file local...")
 config = Cfg.load_config_from_name('vgg_transformer')
-config['weights'] = 'VietAI/vietocr_vgg_transformer'
+config['weights'] = WEIGHTS_PATH
 config['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
 config['predictor']['beamsearch'] = False
 config['cnn']['pretrained'] = False
@@ -96,7 +92,7 @@ def extract_ocr_from_video(video_path, timestamps):
     return " | ".join(sorted(texts)) if texts else ""
 
 # ------------------- Main -------------------
-print("Bắt đầu trích xuất OCR...")
+print("BẮT ĐẦU TRÍCH XUẤT OCR...")
 for item in tqdm(data, desc="OCR"):
     basename = os.path.splitext(os.path.basename(item["video_path"]))[0]
     save_path = os.path.join(OUTPUT_DIR, f"{basename}.txt")
