@@ -1,4 +1,3 @@
-
 # src/dataset_features.py
 import os
 import json
@@ -6,9 +5,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
-import torch.nn.functional as F
-import random  # THÊM cho augmentation
-import albumentations as A
+import random
 
 # --- Hàm pad chuỗi feature theo chiều thời gian ---
 def pad_sequence_feats(feat_list):
@@ -33,25 +30,38 @@ class FeatureVideoQADataset(Dataset):
         super().__init__()
         with open(json_path, "r", encoding="utf-8") as f:
             self.items = json.load(f)["data"]
+
         self.appearance_dir = appearance_dir
         self.motion_dir = motion_dir
-        self.ocr_dir = "features/ocr"  # THÊM: thư mục OCR
+        self.ocr_dir = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/features_v2/ocr"
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         self.max_len = max_len
         self.is_test = is_test
 
-    # ... hàm _load_npy_safe cũ ...
+    def __len__(self):
+        return len(self.items)
+
+    def _load_npy_safe(self, path):
+        try:
+            if os.path.exists(path):
+                arr = np.load(path)
+                if arr.ndim == 1:
+                    arr = np.expand_dims(arr, 0)
+                return arr
+        except Exception:
+            pass
+        return None
 
     def __getitem__(self, idx):
         it = self.items[idx]
+        question = it["question"]
         vid_basename = os.path.splitext(os.path.basename(it["video_path"]))[0]
         app_path = os.path.join(self.appearance_dir, f"{vid_basename}.npy")
         mot_path = os.path.join(self.motion_dir, f"{vid_basename}.npy")
 
+        # --- Load features ---
         app_arr = self._load_npy_safe(app_path)
         mot_arr = self._load_npy_safe(mot_path)
-
-        # fallback nếu file lỗi hoặc thiếu (đã có từ trước)
         if app_arr is None:
             app_arr = np.zeros((1, 768), dtype=np.float32)
         if mot_arr is None:
@@ -60,25 +70,29 @@ class FeatureVideoQADataset(Dataset):
         app_feat = torch.tensor(app_arr, dtype=torch.float32)
         mot_feat = torch.tensor(mot_arr, dtype=torch.float32)
 
-        # --- THÊM AUGMENTATION (chỉ train, 50% chance) ---
+        # --- AUGMENTATION (train only) ---
         if not self.is_test and random.random() < 0.5:
-            # Noise nhẹ vào features (giả lập biến đổi thời tiết/ánh sáng)
             noise_level = 0.05
             app_feat += torch.randn_like(app_feat) * noise_level
             mot_feat += torch.randn_like(mot_feat) * noise_level
 
-        # --- THÊM OCR vào question ---
-        ocr_path = os.path.join("/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/features_v2/ocr", f"{vid_basename}.txt")
+        # --- OCR ---
+        ocr_path = os.path.join(self.ocr_dir, f"{vid_basename}.txt")
         if os.path.exists(ocr_path):
             with open(ocr_path, "r", encoding="utf-8") as f:
                 ocr_text = f.read().strip()
             if ocr_text:
                 question = f"[OCR: {ocr_text}] {question}"
 
-        choices = it["choices"]
-        texts = [question + " " + c for c in choices]
-        enc = self.tokenizer(texts, padding="max_length", truncation=True,
-                             max_length=self.max_len, return_tensors="pt")
+        choices = it.get("choices", ["A", "B", "C", "D"])
+        texts = [f"{question} {c}" for c in choices]
+        enc = self.tokenizer(
+            texts,
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_len,
+            return_tensors="pt"
+        )
 
         label = -1
         ans = it.get("answer", None)
@@ -90,7 +104,7 @@ class FeatureVideoQADataset(Dataset):
 
         if self.is_test:
             return {
-                "ids": it["id"],
+                "ids": it.get("id", vid_basename),
                 "input_ids": enc["input_ids"],
                 "attention_mask": enc["attention_mask"],
                 "appearance": app_feat,
@@ -146,16 +160,15 @@ def collate_fn(batch):
     input_ids = torch.stack(input_ids, dim=0)
     attention_masks = torch.stack(attention_masks, dim=0)
 
-    # ✅ Pad theo chiều thời gian cho video features (768 dim)
     appearance_feats = pad_sequence_feats([b["appearance"] for b in batch])
     motion_feats = pad_sequence_feats([b["motion"] for b in batch])
     labels = torch.tensor([b["label"] for b in batch], dtype=torch.long)
 
     return {
-        "input_ids": input_ids,
-        "attention_mask": attention_masks,
-        "appearance_feats": appearance_feats,  # (B, T_app, 768)
-        "motion_feats": motion_feats,          # (B, T_mot, 768)
+        "input_ids": input_ids,            # (B, C, L)
+        "attention_mask": attention_masks, # (B, C, L)
+        "appearance_feats": appearance_feats,
+        "motion_feats": motion_feats,
         "labels": labels,
     }
 
@@ -165,12 +178,11 @@ def collate_fn_inference(batch):
     batch = [b for b in batch if "input_ids" in b]
 
     ids = [b["ids"] for b in batch]
-    input_ids = [b["input_ids"] for b in batch]          # (num_choices, seq_len)
+    input_ids = [b["input_ids"] for b in batch]
     attention_mask = [b["attention_mask"] for b in batch]
-    appearance = [b["appearance"] for b in batch]        # (T_app, 2048)
-    motion = [b["motion"] for b in batch]                # (T_mot, 2048)
+    appearance = [b["appearance"] for b in batch]
+    motion = [b["motion"] for b in batch]
 
-    # Lấy kích thước lớn nhất trong batch
     max_choices = max(x.shape[0] for x in input_ids)
     max_len = max(x.shape[1] for x in input_ids)
 
@@ -180,13 +192,11 @@ def collate_fn_inference(batch):
         pad_choices = max_choices - num_choices
         pad_len = max_len - seq_len
 
-        # Padding chiều seq_len
         if pad_len > 0:
             pad_seq = torch.zeros((num_choices, pad_len), dtype=torch.long)
             ids_tensor = torch.cat([ids_tensor, pad_seq], dim=1)
             mask_tensor = torch.cat([mask_tensor, pad_seq], dim=1)
 
-        # Padding chiều num_choices
         if pad_choices > 0:
             pad_ids = torch.zeros((pad_choices, max_len), dtype=torch.long)
             ids_tensor = torch.cat([ids_tensor, pad_ids], dim=0)
@@ -197,15 +207,13 @@ def collate_fn_inference(batch):
 
     input_ids = torch.stack(padded_input_ids)
     attention_mask = torch.stack(padded_attention_masks)
-
-    # ✅ Pad theo thời gian cho video features
     appearance = pad_sequence_feats(appearance)
     motion = pad_sequence_feats(motion)
 
     return {
         "ids": ids,
-        "input_ids": input_ids,           # (B, C, L)
-        "attention_mask": attention_mask, # (B, C, L)
-        "appearance": appearance,         # (B, T_app_max, 2048)
-        "motion": motion,                 # (B, T_mot_max, 2048)
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "appearance": appearance,
+        "motion": motion,
     }
