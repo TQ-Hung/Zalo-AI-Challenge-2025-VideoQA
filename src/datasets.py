@@ -214,3 +214,41 @@ def collate_fn(batch):
         "motion_feats": motion_feats,         # (B, T_mot, D)
         "labels": labels,
     }
+
+def collate_fn_inference(batch):
+    # Bỏ các sample lỗi
+    batch = [b for b in batch if b is not None]
+    if len(batch) == 0:
+        return None
+
+    # Flatten tất cả câu hỏi trong batch
+    ids = []
+    input_ids, attention_masks = [], []
+    appearance_feats, motion_feats = [], []
+
+    for b in batch:
+        num_q = b["input_ids"].shape[0]
+        ids.extend(b["ids"])
+        input_ids.append(b["input_ids"])
+        attention_masks.append(b["attention_mask"])
+
+        # Lặp lại feature cho mỗi câu hỏi
+        app_feat = b["appearance"].unsqueeze(0).repeat(num_q, 1, 1)
+        mot_feat = b["motion"].unsqueeze(0).repeat(num_q, 1, 1)
+
+        appearance_feats.append(app_feat)
+        motion_feats.append(mot_feat)
+
+    # Nối tất cả lại thành batch phẳng
+    input_ids = torch.cat(input_ids, dim=0)
+    attention_mask = torch.cat(attention_masks, dim=0)
+    appearance_feats = torch.cat(appearance_feats, dim=0)
+    motion_feats = torch.cat(motion_feats, dim=0)
+
+    return {
+        "ids": ids,
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "appearance_feats": appearance_feats,
+        "motion_feats": motion_feats
+    }

@@ -5,7 +5,7 @@ import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer
 from torch.utils.data import DataLoader
-from datasets import FeatureVideoQADataset, collate_fn
+from datasets import FeatureVideoQADataset, collate_fn_inference
 from model import CrossModalQA as EarlyFusionQA
 
 # ----- Config -----
@@ -46,7 +46,7 @@ def inference():
         test_ds,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        collate_fn=collate_fn,
+        collate_fn=collate_fn_inference,
         num_workers=2
     )
 
