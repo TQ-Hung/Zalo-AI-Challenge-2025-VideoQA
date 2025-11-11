@@ -7,6 +7,8 @@ import torch
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 import torch.nn.functional as F
+import random  # THÊM cho augmentation
+import albumentations as A
 
 # --- Hàm pad chuỗi feature theo chiều thời gian ---
 def pad_sequence_feats(feat_list):
@@ -26,17 +28,6 @@ def pad_sequence_feats(feat_list):
 
 
 class FeatureVideoQADataset(Dataset):
-    """
-    Loads:
-      - appearance .npy -> shape (T_app, 768)
-      - motion .npy     -> shape (T_mot, 768)
-    Returns per sample:
-      - app_feat: torch.FloatTensor (T_app, 768)
-      - mot_feat: torch.FloatTensor (T_mot, 768)
-      - input_ids: torch.LongTensor (num_choices, L)
-      - attention_mask: torch.LongTensor (num_choices, L)
-      - label: int (0..num_choices-1) or -1 if not provided
-    """
     def __init__(self, json_path, appearance_dir, motion_dir,
                  tokenizer_name="bert-base-multilingual-cased", max_len=64, is_test=False):
         super().__init__()
@@ -44,36 +35,23 @@ class FeatureVideoQADataset(Dataset):
             self.items = json.load(f)["data"]
         self.appearance_dir = appearance_dir
         self.motion_dir = motion_dir
+        self.ocr_dir = "features_v2/ocr"  # THÊM: thư mục OCR
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         self.max_len = max_len
         self.is_test = is_test
 
-    def __len__(self):
-        return len(self.items)
-
-    def _load_npy_safe(self, path):
-        if not os.path.exists(path):
-            return None
-        try:
-            arr = np.load(path)
-            if arr is None or arr.size == 0:
-                return None
-            return arr
-        except Exception:
-            return None
+    # ... hàm _load_npy_safe cũ ...
 
     def __getitem__(self, idx):
         it = self.items[idx]
-        video_path = it["video_path"]
         vid_basename = os.path.splitext(os.path.basename(it["video_path"]))[0]
-        
         app_path = os.path.join(self.appearance_dir, f"{vid_basename}.npy")
         mot_path = os.path.join(self.motion_dir, f"{vid_basename}.npy")
 
         app_arr = self._load_npy_safe(app_path)
         mot_arr = self._load_npy_safe(mot_path)
 
-        # fallback nếu file lỗi hoặc thiếu
+        # fallback nếu file lỗi hoặc thiếu (đã có từ trước)
         if app_arr is None:
             app_arr = np.zeros((1, 768), dtype=np.float32)
         if mot_arr is None:
@@ -82,8 +60,23 @@ class FeatureVideoQADataset(Dataset):
         app_feat = torch.tensor(app_arr, dtype=torch.float32)
         mot_feat = torch.tensor(mot_arr, dtype=torch.float32)
 
-        # tokenize câu hỏi + đáp án
+        # --- THÊM AUGMENTATION (chỉ train, 50% chance) ---
+        if not self.is_test and random.random() < 0.5:
+            # Noise nhẹ vào features (giả lập biến đổi thời tiết/ánh sáng)
+            noise_level = 0.05
+            app_feat += torch.randn_like(app_feat) * noise_level
+            mot_feat += torch.randn_like(mot_feat) * noise_level
+
+        # --- THÊM OCR vào question ---
+        ocr_path = os.path.join(self.ocr_dir, f"{vid_basename}.txt")
+        ocr_text = ""
+        if os.path.exists(ocr_path):
+            with open(ocr_path, "r", encoding="utf-8") as f:
+                ocr_text = f.read().strip()
         question = it["question"]
+        if ocr_text:
+            question = f"[OCR: {ocr_text}] {question}"  # Concat OCR đầu question
+
         choices = it["choices"]
         texts = [question + " " + c for c in choices]
         enc = self.tokenizer(texts, padding="max_length", truncation=True,
