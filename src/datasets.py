@@ -1,164 +1,101 @@
-
-# src/dataset_features.py
+# src/datasets.py
 import os
 import json
-import numpy as np
 import torch
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
-import torch.nn.functional as F
-import random  # THÊM cho augmentation
-import albumentations as A
-
-# --- Hàm pad chuỗi feature theo chiều thời gian ---
-def pad_sequence_feats(feat_list):
-    """
-    feat_list: list of tensors có shape (T_i, D)
-    Mục tiêu: pad tất cả lên T_max theo batch để có (B, T_max, D)
-    """
-    max_len = max(f.shape[0] for f in feat_list)
-    feat_dim = feat_list[0].shape[1]
-    batch_size = len(feat_list)
-
-    padded = torch.zeros((batch_size, max_len, feat_dim), dtype=torch.float32)
-    for i, f in enumerate(feat_list):
-        length = f.shape[0]
-        padded[i, :length] = f
-    return padded
-
+import numpy as np
 
 class FeatureVideoQADataset(Dataset):
-    def __init__(self, json_path, appearance_dir, motion_dir,
-                 tokenizer_name="bert-base-multilingual-cased", max_len=64, is_test=False):
-        super().__init__()
+    def __init__(self, json_path, appearance_dir, motion_dir, tokenizer_name="vinai/phobert-base-v2", max_len=64):
         with open(json_path, "r", encoding="utf-8") as f:
-            self.items = json.load(f)["data"]
-        self.appearance_dir = appearance_dir
-        self.motion_dir = motion_dir
-        self.ocr_dir = "features/ocr"  # THÊM: thư mục OCR
-        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+            data = json.load(f)["data"]
+        
+        self.items = []
+        for item in data:
+            video_path = item["video_path"]
+            basename = os.path.splitext(os.path.basename(video_path))[0]
+            app_path = os.path.join(appearance_dir, f"{basename}.npy")
+            mot_path = os.path.join(motion_dir, f"{basename}.npy")
+            
+            if not (os.path.exists(app_path) and os.path.exists(mot_path)):
+                continue
+                
+            self.items.append({
+                "question": item["question"],
+                "options": item.get("options", ["A", "B", "C", "D"]),
+                "answer": item.get("answer", "A"),
+                "appearance_path": app_path,
+                "motion_path": mot_path,
+                "video_id": basename
+            })
+        
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_name,
+            use_auth_token=os.getenv("HUGGINGFACE_TOKEN", None),
+            trust_remote_code=True
+        )
         self.max_len = max_len
-        self.is_test = is_test
 
-    # ... hàm _load_npy_safe cũ ...
+        # THÊM DÒNG NÀY ĐỂ CÓ OCR (nếu có)
+        self.ocr_dir = "features_v2/ocr"
+
+    def __len__(self):
+        return len(self.items)  # QUAN TRỌNG NHẤT – FIX LỖI LEN()
 
     def __getitem__(self, idx):
-        it = self.items[idx]
-        vid_basename = os.path.splitext(os.path.basename(it["video_path"]))[0]
-        app_path = os.path.join(self.appearance_dir, f"{vid_basename}.npy")
-        mot_path = os.path.join(self.motion_dir, f"{vid_basename}.npy")
-
-        app_arr = self._load_npy_safe(app_path)
-        mot_arr = self._load_npy_safe(mot_path)
-
-        # fallback nếu file lỗi hoặc thiếu (đã có từ trước)
-        if app_arr is None:
-            app_arr = np.zeros((1, 768), dtype=np.float32)
-        if mot_arr is None:
-            mot_arr = np.zeros((1, 768), dtype=np.float32)
-
-        app_feat = torch.tensor(app_arr, dtype=torch.float32)
-        mot_feat = torch.tensor(mot_arr, dtype=torch.float32)
-
-        # --- THÊM AUGMENTATION (chỉ train, 50% chance) ---
-        if not self.is_test and random.random() < 0.5:
-            # Noise nhẹ vào features (giả lập biến đổi thời tiết/ánh sáng)
-            noise_level = 0.05
-            app_feat += torch.randn_like(app_feat) * noise_level
-            mot_feat += torch.randn_like(mot_feat) * noise_level
-
-        # --- THÊM OCR vào question ---
-        ocr_path = os.path.join("features_v2/ocr", f"{vid_basename}.txt")
+        item = self.items[idx]
+        
+        # Load features
+        appearance = np.load(item["appearance_path"]).astype(np.float32)
+        motion = np.load(item["motion_path"]).astype(np.float32)
+        
+        # OCR (nếu có)
+        ocr_text = ""
+        ocr_path = os.path.join(self.ocr_dir, f"{item['video_id']}.txt")
         if os.path.exists(ocr_path):
             with open(ocr_path, "r", encoding="utf-8") as f:
                 ocr_text = f.read().strip()
-            if ocr_text:
-                question = f"[OCR: {ocr_text}] {question}"
-
-        choices = it["choices"]
-        texts = [question + " " + c for c in choices]
-        enc = self.tokenizer(texts, padding="max_length", truncation=True,
-                             max_length=self.max_len, return_tensors="pt")
-
-        label = -1
-        ans = it.get("answer", None)
-        if ans is not None:
-            for i, c in enumerate(choices):
-                if ans.strip() == c.strip():
-                    label = i
-                    break
-
-        if self.is_test:
-            return {
-                "ids": it["id"],
-                "input_ids": enc["input_ids"],
-                "attention_mask": enc["attention_mask"],
-                "appearance": app_feat,
-                "motion": mot_feat,
-            }
-        else:
-            return {
-                "video_id": it.get("id", vid_basename),
-                "appearance": app_feat,
-                "motion": mot_feat,
-                "input_ids": enc["input_ids"],
-                "attention_mask": enc["attention_mask"],
-                "label": label,
-                "choices": choices,
-            }
-
-
-# --- Collate function cho train/val ---
-def collate_fn(batch):
-    if "choices" not in batch[0]:
-        # Inference/test mode
-        input_ids = torch.stack([b["input_ids"] for b in batch])
-        attention_masks = torch.stack([b["attention_mask"] for b in batch])
-        appearance_feats = pad_sequence_feats([b["appearance"] for b in batch])
-        motion_feats = pad_sequence_feats([b["motion"] for b in batch])
-        ids = [b["ids"] for b in batch]
+        
+        question = item["question"]
+        if ocr_text:
+            question = f"[OCR: {ocr_text}] {question}"
+        
+        # Tokenize
+        encoded = self.tokenizer.encode_plus(
+            question,
+            max_length=self.max_len,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt"
+        )
+        
+        # Label mapping
+        label_map = {"A": 0, "B": 1, "C": 2, "D": 3}
+        label = label_map.get(item["answer"], -1)
+        
         return {
-            "ids": ids,
-            "input_ids": input_ids,
-            "attention_mask": attention_masks,
-            "appearance_feats": appearance_feats,
-            "motion_feats": motion_feats,
+            "input_ids": encoded["input_ids"].squeeze(),
+            "attention_mask": encoded["attention_mask"].squeeze(),
+            "appearance_feats": torch.from_numpy(appearance),
+            "motion_feats": torch.from_numpy(motion),
+            "labels": torch.tensor(label, dtype=torch.long)
         }
 
-    batch = [b for b in batch if "choices" in b and len(b["choices"]) > 0]
-    if len(batch) == 0:
-        return None
-
-    max_choices = max(len(b["choices"]) for b in batch)
-    input_ids, attention_masks = [], []
-
-    for b in batch:
-        pad_len = max_choices - len(b["choices"])
-        if pad_len > 0:
-            pad_ids = torch.zeros((pad_len, b["input_ids"].shape[1]), dtype=torch.long)
-            pad_mask = torch.zeros((pad_len, b["attention_mask"].shape[1]), dtype=torch.long)
-            input_ids.append(torch.cat([b["input_ids"], pad_ids], dim=0))
-            attention_masks.append(torch.cat([b["attention_mask"], pad_mask], dim=0))
-        else:
-            input_ids.append(b["input_ids"])
-            attention_masks.append(b["attention_mask"])
-
-    input_ids = torch.stack(input_ids, dim=0)
-    attention_masks = torch.stack(attention_masks, dim=0)
-
-    # ✅ Pad theo chiều thời gian cho video features (768 dim)
-    appearance_feats = pad_sequence_feats([b["appearance"] for b in batch])
-    motion_feats = pad_sequence_feats([b["motion"] for b in batch])
-    labels = torch.tensor([b["label"] for b in batch], dtype=torch.long)
-
+def collate_fn(batch):
+    input_ids = torch.stack([b["input_ids"] for b in batch])
+    attention_mask = torch.stack([b["attention_mask"] for b in batch])
+    appearance = torch.stack([b["appearance_feats"] for b in batch])
+    motion = torch.stack([b["motion_feats"] for b in batch])
+    labels = torch.stack([b["labels"] for b in batch])
+    
     return {
         "input_ids": input_ids,
-        "attention_mask": attention_masks,
-        "appearance_feats": appearance_feats,  # (B, T_app, 768)
-        "motion_feats": motion_feats,          # (B, T_mot, 768)
-        "labels": labels,
+        "attention_mask": attention_mask,
+        "appearance_feats": appearance,
+        "motion_feats": motion,
+        "labels": labels
     }
-
 
 # --- Collate function cho inference ---
 def collate_fn_inference(batch):
