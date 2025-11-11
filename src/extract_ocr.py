@@ -1,6 +1,7 @@
 # extract_ocr.py
-# PHIÊN BẢN CHÍNH THỨC – DÙNG BIẾN MÔI TRƯỜNG → AN TOÀN KHI COMMIT GIT
-# Thời gian: ~3-5 phút cho 549 video
+# PHIÊN BẢN CHUẨN NHẤT CHO KAGGLE + GIT
+# DÙNG KAGGLE SECRETS → KHÔNG LỘ TOKEN, COMMIT THOẢI MÁI
+# Thời gian: ~3-5 phút
 
 import os
 import cv2
@@ -11,14 +12,19 @@ from tqdm import tqdm
 from vietocr.tool.config import Cfg
 from vietocr.tool.predictor import Predictor
 
-# ------------------- DÙNG BIẾN MÔI TRƯỜNG (AN TOÀN) -------------------
-from huggingface_hub import login
+# ------------------- LẤY TOKEN TỪ KAGGLE SECRETS (AN TOÀN 100%) -------------------
+try:
+    from kaggle_secrets import UserSecretsClient
+    user_secrets = UserSecretsClient()
+    HF_TOKEN = user_secrets.get_secret("HF_TOKEN")
+    if not HF_TOKEN:
+        raise ValueError("Không tìm thấy HF_TOKEN trong Secrets!")
+except Exception as e:
+    raise RuntimeError(f"Lỗi lấy token: {e}\nHãy vào Add-ons → Secrets → thêm HF_TOKEN")
 
-HF_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
-if not HF_TOKEN:
-    raise ValueError("Vui lòng export HUGGINGFACE_TOKEN trước khi chạy!")
+from huggingface_hub import login
 login(token=HF_TOKEN)
-print("Đã login HuggingFace bằng HUGGINGFACE_TOKEN từ env!")
+print("Login HuggingFace thành công từ Kaggle Secrets!")
 
 # ------------------- Config -------------------
 VIDEO_DIR = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/train/videos"
@@ -26,12 +32,9 @@ TRAIN_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train
 OUTPUT_DIR = "features/ocr"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ------------------- TẢI MODEL CHÍNH THỨC VỚI TOKEN -------------------
-print("Loading VietOCR model chính thức...")
+print("Loading VietOCR model...")
 config = Cfg.load_config_from_name('vgg_transformer')
-
-# Dùng tên repo → tự động tải .pth (cần token)
-config['weights'] = 'VietAI/vietocr_vgg_transformer'
+config['weights'] = 'VietAI/vietocr_vgg_transformer'  # Repo chính thức
 config['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
 config['predictor']['beamsearch'] = False
 config['cnn']['pretrained'] = False
@@ -65,11 +68,9 @@ print(f"Loaded {len(video_to_supports)} videos.")
 def extract_ocr_from_video(video_path, timestamps):
     if not timestamps:
         return ""
-    
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     texts = set()
-    
     for ts in timestamps:
         frame_idx = int(ts * fps)
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -78,14 +79,12 @@ def extract_ocr_from_video(video_path, timestamps):
             continue
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(frame)
-        
         try:
             text = predictor.predict(pil_img).strip()
             if text and len(text) <= 40:
                 texts.add(text)
         except:
             continue
-    
     cap.release()
     return " | ".join(sorted(texts)) if texts else ""
 
@@ -94,23 +93,18 @@ print("Bắt đầu trích xuất OCR...")
 for item in tqdm(data, desc="OCR"):
     basename = os.path.splitext(os.path.basename(item["video_path"]))[0]
     save_path = os.path.join(OUTPUT_DIR, f"{basename}.txt")
-    
     if os.path.exists(save_path):
         continue
-    
     video_path = os.path.join(VIDEO_DIR, f"{basename}.mp4")
     if not os.path.exists(video_path):
         continue
-    
     timestamps = video_to_supports.get(basename, [])
     ocr_text = extract_ocr_from_video(video_path, timestamps)
-    
     with open(save_path, "w", encoding="utf-8") as f:
         f.write(ocr_text)
 
 print(f"OCR HOÀN TẤT! Đã lưu {len([f for f in os.listdir(OUTPUT_DIR) if f.endswith('.txt')])} file")
-print("Ví dụ 3 file đầu tiên:")
+print("Ví dụ:")
 for f in sorted(os.listdir(OUTPUT_DIR))[:3]:
-    path = os.path.join(OUTPUT_DIR, f)
-    text = open(path, 'r', encoding='utf-8').read().strip()
+    text = open(os.path.join(OUTPUT_DIR, f), "r", encoding="utf-8").read().strip()
     print(f"  {f}: {text}")
