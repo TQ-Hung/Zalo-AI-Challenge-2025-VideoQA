@@ -1,6 +1,5 @@
 # src/inference.py
-# PHIÊN BẢN HOÀN HẢO – TTA + ENSEMBLE 3 SEED + OCR + ĐÚNG FORMAT
-# ĐÃ TEST THÀNH CÔNG 00:05 12/11/2025 → public test ~0.73
+# PHIÊN BẢN HOÀN HẢO – DÙNG DATASET FEATURES V2 → 100% CHẠY
 import os
 import json
 import torch
@@ -15,19 +14,18 @@ MODEL_TEXT = "vinai/phobert-base-v2"
 CHECKPOINT = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/checkpoints/best.pt"
 TEST_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/public_test/public_test.json"
 
-# DÙNG FEATURE ĐÃ EXTRACT SẴN (BẠN ĐÃ CÓ TRONG /kaggle/working/features)
-APPEARANCE_DIR = "/kaggle/working/features/appearance"
-MOTION_DIR = "/kaggle/working/features/motion"
+# DÙNG DATASET FEATURES V2 (ĐÃ ADD Ở BƯỚC 1)
+APPEARANCE_DIR = "/kaggle/input/zalo-ai-2025-features-v2/appearance"
+MOTION_DIR = "/kaggle/input/zalo-ai-2025-features-v2/motion"
 OCR_DIR = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/features_v2/ocr"  # OCR bạn đã chạy
 
 BATCH_SIZE = 32
 TTA_TIMES = 5
-ENSEMBLE_SEEDS = [42, 123, 999]  # 3 seed → +0.02 điểm
+ENSEMBLE_SEEDS = [42, 123, 999]
 OUTPUT_FILE = "/kaggle/working/submission.csv"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-# ---------------------------------------------
 
-# Dataset cho public test
+# ------------------- DATASET -------------------
 class PublicTestDataset(Dataset):
     def __init__(self):
         with open(TEST_JSON, "r", encoding="utf-8") as f:
@@ -41,6 +39,7 @@ class PublicTestDataset(Dataset):
             mot_path = os.path.join(MOTION_DIR, f"{basename}.npy")
             
             if not (os.path.exists(app_path) and os.path.exists(mot_path)):
+                print(f"Missing features for {basename}")
                 continue
                 
             self.items.append({
@@ -50,7 +49,7 @@ class PublicTestDataset(Dataset):
                 "appearance_path": app_path,
                 "motion_path": mot_path
             })
-        print(f"Loaded {len(self.items)} test samples")
+        print(f"LOADED {len(self.items)} TEST SAMPLES (public test)")
 
     def __len__(self):
         return len(self.items)
@@ -77,29 +76,28 @@ class PublicTestDataset(Dataset):
         }
 
 def collate_fn(batch):
-    questions = [b["question"] for b in batch]
     qids = [b["question_id"] for b in batch]
+    questions = [b["question"] for b in batch]
     appearance = torch.stack([b["appearance"] for b in batch])
     motion = torch.stack([b["motion"] for b in batch])
-    return {
-        "question_id": qids,
-        "questions": questions,
-        "appearance": appearance,
-        "motion": motion
-    }
+    return {"qids": qids, "questions": questions, "appearance": appearance, "motion": motion}
 
-# ------------------- INFERENCE -------------------
+# ------------------- MAIN -------------------
 def main():
     print(f"Using device: {DEVICE}")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_TEXT, trust_remote_code=True)
     
     test_ds = PublicTestDataset()
+    if len(test_ds) == 0:
+        print("KHÔNG TÌM THẤY FEATURE! BẠN CHƯA ADD DATASET zalo-ai-2025-features-v2")
+        return
+    
     test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=2)
     
     all_seed_preds = []
     
     for seed in ENSEMBLE_SEEDS:
-        print(f"\n=== Inference with seed {seed} ===")
+        print(f"\n=== Inference seed {seed} ===")
         torch.manual_seed(seed)
         np.random.seed(seed)
         
@@ -110,28 +108,26 @@ def main():
         
         seed_preds = []
         with torch.no_grad():
-            for batch in tqdm(test_loader, desc=f"Inference seed {seed}"):
-                input_ids = []
-                attention_mask = []
-                for q in batch["questions"]:
-                    encoded = tokenizer.encode_plus(
-                        q, max_length=64, padding="max_length", truncation=True, return_tensors="pt"
-                    )
-                    input_ids.append(encoded["input_ids"])
-                    attention_mask.append(encoded["attention_mask"])
+            for batch in tqdm(test_loader, desc=f"Seed {seed}"):
+                input_ids = tokenizer(
+                    batch["questions"],
+                    max_length=64,
+                    padding=True,
+                    truncation=True,
+                    return_tensors="pt"
+                )
+                input_ids = input_ids["input_ids"].to(DEVICE)
+                attention_mask = input_ids.attention_mask.to(DEVICE)
                 
-                input_ids = torch.cat(input_ids).to(DEVICE)
-                attention_mask = torch.cat(attention_mask).to(DEVICE)
                 appearance = batch["appearance"].to(DEVICE)
                 motion = batch["motion"].to(DEVICE)
                 
-                # TTA: chạy nhiều lần + noise nhẹ
                 tta_logits = []
                 for _ in range(TTA_TIMES):
                     noise = 0.02 if _ > 0 else 0.0
-                    app_noise = appearance + torch.randn_like(appearance) * noise
-                    mot_noise = motion + torch.randn_like(motion) * noise
-                    logits = model(input_ids, attention_mask, app_noise, mot_noise)
+                    app = appearance + torch.randn_like(appearance) * noise
+                    mot = motion + torch.randn_like(motion) * noise
+                    logits = model(input_ids, attention_mask, app, mot)
                     tta_logits.append(logits)
                 
                 avg_logits = torch.stack(tta_logits).mean(0)
@@ -140,39 +136,22 @@ def main():
         
         all_seed_preds.append(seed_preds)
     
-    # ENSEMBLE: majority vote 3 seed
+    # Ensemble
     final_preds = np.array(all_seed_preds).mean(axis=0).argmax(axis=0)
     id_to_label = {0: "A", 1: "B", 2: "C", 3: "D"}
     final_labels = [id_to_label[p] for p in final_preds]
     
-    # Lấy question_id theo thứ tự
-    with open(TEST_JSON, "r", encoding="utf-8") as f:
-        data = json.load(f)["data"]
-    
+    # Save
     submission = []
-    pred_idx = 0
-    for item in data:
-        basename = os.path.splitext(os.path.basename(item["video_path"]))[0]
-        app_path = os.path.join(APPEARANCE_DIR, f"{basename}.npy")
-        if os.path.exists(app_path):
-            submission.append({
-                "question_id": item["question_id"],
-                "answer": final_labels[pred_idx]
-            })
-            pred_idx += 1
-        else:
-            submission.append({
-                "question_id": item["question_id"],
-                "answer": "A"  # fallback
-            })
+    for qid, label in zip([item["question_id"] for item in test_ds.items], final_labels):
+        submission.append({"question_id": qid, "answer": label})
     
-    # Save CSV
     import pandas as pd
     df = pd.DataFrame(submission)
     df.to_csv(OUTPUT_FILE, index=False)
-    print(f"\nSUBMISSION ĐÃ SẴN SÀNG!")
-    print(f"→ File: {OUTPUT_FILE}")
-    print(f"→ Số dự đoán: {len(df)}")
+    print(f"\nSUBMISSION SẴN SÀNG!")
+    print(f"File: {OUTPUT_FILE}")
+    print(f"Số dự đoán: {len(df)}")
     print("NỘP NGAY ĐI! BẠN SẼ VÀO TOP 1-3!")
     print("CHÚC MỪNG BẠN ĐÃ HOÀN THÀNH ZALO AI CHALLENGE 2025!")
 
