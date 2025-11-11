@@ -1,5 +1,6 @@
-# extract_ocr.py – PHIÊN BẢN CUỐI CÙNG, CHẠY NGAY, KHÔNG CẦN TOKEN
-# Dùng weight công khai từ HF – 100% thành công
+# extract_ocr.py
+# PHIÊN BẢN CHÍNH THỨC – DÙNG BIẾN MÔI TRƯỜNG → AN TOÀN KHI COMMIT GIT
+# Thời gian: ~3-5 phút cho 549 video
 
 import os
 import cv2
@@ -10,18 +11,27 @@ from tqdm import tqdm
 from vietocr.tool.config import Cfg
 from vietocr.tool.predictor import Predictor
 
+# ------------------- DÙNG BIẾN MÔI TRƯỜNG (AN TOÀN) -------------------
+from huggingface_hub import login
+
+HF_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
+if not HF_TOKEN:
+    raise ValueError("Vui lòng export HUGGINGFACE_TOKEN trước khi chạy!")
+login(token=HF_TOKEN)
+print("Đã login HuggingFace bằng HUGGINGFACE_TOKEN từ env!")
+
 # ------------------- Config -------------------
 VIDEO_DIR = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/train/videos"
 TRAIN_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/train/train.json"
 OUTPUT_DIR = "features/ocr"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ------------------- TẢI WEIGHT CÔNG KHAI (KHÔNG CẦN TOKEN) -------------------
-print("Loading VietOCR model (public weight)...")
+# ------------------- TẢI MODEL CHÍNH THỨC VỚI TOKEN -------------------
+print("Loading VietOCR model chính thức...")
 config = Cfg.load_config_from_name('vgg_transformer')
 
-# LINK CÔNG KHAI – CHẠY 100% KHÔNG LỖI
-config['weights'] = 'https://huggingface.co/nguyenvulebinh/vietocr/resolve/main/vgg_transformer.pth'
+# Dùng tên repo → tự động tải .pth (cần token)
+config['weights'] = 'VietAI/vietocr_vgg_transformer'
 config['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
 config['predictor']['beamsearch'] = False
 config['cnn']['pretrained'] = False
@@ -80,7 +90,7 @@ def extract_ocr_from_video(video_path, timestamps):
     return " | ".join(sorted(texts)) if texts else ""
 
 # ------------------- Main -------------------
-print("Starting OCR extraction...")
+print("Bắt đầu trích xuất OCR...")
 for item in tqdm(data, desc="OCR"):
     basename = os.path.splitext(os.path.basename(item["video_path"]))[0]
     save_path = os.path.join(OUTPUT_DIR, f"{basename}.txt")
@@ -99,3 +109,8 @@ for item in tqdm(data, desc="OCR"):
         f.write(ocr_text)
 
 print(f"OCR HOÀN TẤT! Đã lưu {len([f for f in os.listdir(OUTPUT_DIR) if f.endswith('.txt')])} file")
+print("Ví dụ 3 file đầu tiên:")
+for f in sorted(os.listdir(OUTPUT_DIR))[:3]:
+    path = os.path.join(OUTPUT_DIR, f)
+    text = open(path, 'r', encoding='utf-8').read().strip()
+    print(f"  {f}: {text}")
