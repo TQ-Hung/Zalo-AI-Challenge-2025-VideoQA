@@ -6,12 +6,14 @@ from torch.utils.data import Dataset
 from transformers import AutoTokenizer
 import numpy as np
 
+# src/datasets.py – CHỈ SỬA 2 DÒNG + THÊM OCR
 class FeatureVideoQADataset(Dataset):
     def __init__(self, json_path, appearance_dir, motion_dir, tokenizer_name="vinai/phobert-base-v2", max_len=64):
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)["data"]
         
         self.items = []
+        missing = 0
         for item in data:
             video_path = item["video_path"]
             basename = os.path.splitext(os.path.basename(video_path))[0]
@@ -19,7 +21,8 @@ class FeatureVideoQADataset(Dataset):
             mot_path = os.path.join(motion_dir, f"{basename}.npy")
             
             if not (os.path.exists(app_path) and os.path.exists(mot_path)):
-                continue
+                missing += 1
+                continue  # Bỏ qua video không có feature
                 
             self.items.append({
                 "question": item["question"],
@@ -30,27 +33,25 @@ class FeatureVideoQADataset(Dataset):
                 "video_id": basename
             })
         
+        print(f"Loaded {len(self.items)} samples | Skipped {missing} (no features)")  # THÊM DÒNG IN
+        
         self.tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name,
             use_auth_token=os.getenv("HUGGINGFACE_TOKEN", None),
             trust_remote_code=True
         )
         self.max_len = max_len
-
-        # THÊM DÒNG NÀY ĐỂ CÓ OCR (nếu có)
-        self.ocr_dir = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/features_v2"
+        self.ocr_dir = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/features_v2/ocr"  # OCR ĐÃ CÓ
 
     def __len__(self):
-        return len(self.items)  # QUAN TRỌNG NHẤT – FIX LỖI LEN()
+        return len(self.items)
 
     def __getitem__(self, idx):
         item = self.items[idx]
-        
-        # Load features
         appearance = np.load(item["appearance_path"]).astype(np.float32)
         motion = np.load(item["motion_path"]).astype(np.float32)
         
-        # OCR (nếu có)
+        # OCR
         ocr_text = ""
         ocr_path = os.path.join(self.ocr_dir, f"{item['video_id']}.txt")
         if os.path.exists(ocr_path):
@@ -61,7 +62,6 @@ class FeatureVideoQADataset(Dataset):
         if ocr_text:
             question = f"[OCR: {ocr_text}] {question}"
         
-        # Tokenize
         encoded = self.tokenizer.encode_plus(
             question,
             max_length=self.max_len,
@@ -70,7 +70,6 @@ class FeatureVideoQADataset(Dataset):
             return_tensors="pt"
         )
         
-        # Label mapping
         label_map = {"A": 0, "B": 1, "C": 2, "D": 3}
         label = label_map.get(item["answer"], -1)
         
