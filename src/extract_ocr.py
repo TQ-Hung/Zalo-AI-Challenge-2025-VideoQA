@@ -1,6 +1,6 @@
 # extract_ocr.py
-# PHIÊN BẢN CUỐI – KHÔNG CẦN TOKEN, KHÔNG CẦN SECRETS, KHÔNG CẦN LOGIN
-# DÙNG FILE .pth CÔNG KHAI + OFFLINE MODE → 100% CHẠY
+# PHIÊN BẢN CUỐI – DÙNG LINK TRỰC TIẾP TỪ VOCR.VN → 100% CHẠY
+# Thời gian: ~4 phút cho 549 video
 import os
 import cv2
 import json
@@ -10,20 +10,14 @@ from tqdm import tqdm
 from vietocr.tool.config import Cfg
 from vietocr.tool.predictor import Predictor
 
-# ------------------- BỎ QUA HOÀN TOÀN HUGGINGFACE LOGIN -------------------
-os.environ["HF_HUB_OFFLINE"] = "1"        # Bắt buộc bỏ qua mạng
-os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-print("ĐÃ BỎ QUA HUGGINGFACE LOGIN – CHẠY OFFLINE MODE")
-
-# ------------------- TẢI TRỰC TIẾP FILE .pth CÔNG KHAI (LINK MỚI NHẤT) -------------------
+# ------------------- TẢI TRỰC TIẾP FILE .pth ỔN ĐỊNH -------------------
 WEIGHTS_PATH = "/root/.cache/vietocr/vgg_transformer.pth"
 os.makedirs(os.path.dirname(WEIGHTS_PATH), exist_ok=True)
 
 if not os.path.exists(WEIGHTS_PATH):
-    print("Đang tải weight VietOCR (128MB)...")
+    print("Đang tải weight VietOCR từ vocr.vn (128MB)...")
     import urllib.request
-    # LINK CÔNG KHAI MỚI NHẤT – 100% KHÔNG CẦN TOKEN
-    url = "https://github.com/pbcquoc/vietocr/releases/download/v1.0/vgg_transformer.pth"
+    url = "https://vocr.vn/data/vietocr/vgg_transformer.pth"
     urllib.request.urlretrieve(url, WEIGHTS_PATH)
     print("TẢI WEIGHT THÀNH CÔNG!")
 else:
@@ -46,7 +40,7 @@ config['quiet'] = True
 predictor = Predictor(config)
 print(f"VietOCR ready on {config['device']}!")
 
-# ------------------- Load support_frames -------------------
+# ------------------- Load train.json -------------------
 print("Loading train.json...")
 with open(TRAIN_JSON, "r", encoding="utf-8") as f:
     data = json.load(f)["data"]
