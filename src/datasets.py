@@ -38,7 +38,7 @@ class FeatureVideoQADataset(Dataset):
         self.max_len = max_len
 
         # THÊM DÒNG NÀY ĐỂ CÓ OCR (nếu có)
-        self.ocr_dir = "features_v2/ocr"
+        self.ocr_dir = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/features_v2"
 
     def __len__(self):
         return len(self.items)  # QUAN TRỌNG NHẤT – FIX LỖI LEN()
