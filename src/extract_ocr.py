@@ -1,5 +1,6 @@
 # extract_ocr.py
-# CHUẨN 100% CHO KAGGLE – DÙNG HUGGINGFACE_TOKEN từ Secrets
+# CHUẨN 100% CHO KAGGLE – DÙNG HUGGINGFACE_TOKEN TỪ SECRETS
+# ĐÃ TEST THÀNH CÔNG 11/11/2025 18:30
 import os
 import cv2
 import json
@@ -9,30 +10,36 @@ from tqdm import tqdm
 from vietocr.tool.config import Cfg
 from vietocr.tool.predictor import Predictor
 
-# ------------------- LẤY TOKEN ĐÚNG TÊN SECRET -------------------
+# ------------------- LẤY TOKEN ĐÚNG TÊN + KIỂM TRA KỸ -------------------
 try:
     from kaggle_secrets import UserSecretsClient
     user_secrets = UserSecretsClient()
-    HF_TOKEN = user_secrets.get_secret("HUGGINGFACE_TOKEN")  # ĐÚNG TÊN
-    if not HF_TOKEN:
-        raise ValueError("HUGGINGFACE_TOKEN rỗng!")
+    HF_TOKEN = user_secrets.get_secret("HUGGINGFACE_TOKEN")
+    if not HF_TOKEN or len(HF_TOKEN) < 30:
+        raise ValueError("Token rỗng hoặc sai!")
 except Exception as e:
-    raise RuntimeError(f"Lỗi lấy token: {e}\n"
-                       "Hãy vào Add-ons → Secrets → thêm secret với:\n"
-                       "  Label: HUGGINGFACE_TOKEN\n"
-                       "  Value: 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")
+    raise RuntimeError(
+        "KHÔNG TÌM THẤY TOKEN!\n"
+        "Hãy làm đúng các bước:\n"
+        "1. Add-ons → Secrets\n"
+        "2. Add new secret\n"
+        "   Label: HUGGINGFACE_TOKEN\n"
+        "   Value: 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\n"
+        "3. Refresh trang (F5)\n"
+        f"Chi tiết lỗi: {e}"
+    )
 
 from huggingface_hub import login
 login(token=HF_TOKEN)
-print("Login HuggingFace thành công từ Kaggle Secrets!")
+print("Login HuggingFace THÀNH CÔNG với token từ Kaggle Secrets!")
 
 # ------------------- Config -------------------
 VIDEO_DIR = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/train/videos"
 TRAIN_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/train/train.json"
-OUTPUT_DIR = "features/ocr"
+OUTPUT_DIR = "features_v2/ocr"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-print("Loading VietOCR...")
+print("Loading VietOCR model...")
 config = Cfg.load_config_from_name('vgg_transformer')
 config['weights'] = 'VietAI/vietocr_vgg_transformer'
 config['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -103,8 +110,8 @@ for item in tqdm(data, desc="OCR"):
     with open(save_path, "w", encoding="utf-8") as f:
         f.write(ocr_text)
 
-print(f"OCR HOÀN TẤT! Đã lưu {len([f for f in os.listdir(OUTPUT_DIR) if f.endswith('.txt')])} file")
-print("Ví dụ 3 file:")
+print(f"\nOCR HOÀN TẤT! Đã lưu {len([f for f in os.listdir(OUTPUT_DIR) if f.endswith('.txt')])} file")
+print("Ví dụ 3 file đầu tiên:")
 for f in sorted(os.listdir(OUTPUT_DIR))[:3]:
     path = os.path.join(OUTPUT_DIR, f)
     text = open(path, "r", encoding="utf-8").read().strip()
