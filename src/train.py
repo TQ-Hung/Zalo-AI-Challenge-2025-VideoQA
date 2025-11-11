@@ -100,11 +100,11 @@ def train():
         ans = item.get("answer", "")
         labels_for_stratify.append(f"{label}_{ans[:10]}")
     train_idx, val_idx = train_test_split(
-            range(len(full_ds)),
-            test_size=VALID_SPLIT,
-            stratify=labels_for_stratify,
-            random_state=SEED
-        )
+        range(len(full_ds)),
+        test_size=VALID_SPLIT,
+        random_state=SEED
+    )
+
     from torch.utils.data import Subset
     train_ds = Subset(full_ds, train_idx)
     val_ds = Subset(full_ds, val_idx)
