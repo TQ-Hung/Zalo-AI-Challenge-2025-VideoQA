@@ -69,11 +69,12 @@ class FeatureVideoQADataset(Dataset):
 
         # --- THÊM OCR vào question ---
         ocr_path = os.path.join("features_v2/ocr", f"{vid_basename}.txt")
+        ocr_text = ""
         if os.path.exists(ocr_path):
             with open(ocr_path, "r", encoding="utf-8") as f:
                 ocr_text = f.read().strip()
-            if ocr_text:
-                question = f"[OCR: {ocr_text}] {question}"
+        if ocr_text:
+            question = f"[OCR: {ocr_text}] {question}"
 
         choices = it["choices"]
         texts = [question + " " + c for c in choices]
