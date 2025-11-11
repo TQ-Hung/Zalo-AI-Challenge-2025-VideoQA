@@ -35,7 +35,7 @@ class FeatureVideoQADataset(Dataset):
             self.items = json.load(f)["data"]
         self.appearance_dir = appearance_dir
         self.motion_dir = motion_dir
-        self.ocr_dir = "features_v2/ocr"  # THÊM: thư mục OCR
+        self.ocr_dir = "features/ocr"  # THÊM: thư mục OCR
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         self.max_len = max_len
         self.is_test = is_test
