@@ -17,7 +17,7 @@ import cv2
 # ------------------- CONFIG -------------------
 MODEL_TEXT = "vinai/phobert-base-v2"
 CHECKPOINT = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/checkpoints/best.pt"
-TEST_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/public_test/videos"
+TEST_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/public_test/public_test.json"
 VIDEO_DIR = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/public_test/videos"
 OCR_DIR = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/features_v2/ocr"
 
