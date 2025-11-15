@@ -45,7 +45,7 @@ class FeatureVideoQADataset(Dataset):
         self.appearance_dir = appearance_dir
         self.motion_dir = motion_dir
         # adjust path if needed
-        self.ocr_dir = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/features_v2/ocr"
+        self.ocr_dir = "/kaggle/working/features_v2/ocr"
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
         self.max_len = max_len
         self.is_test = is_test

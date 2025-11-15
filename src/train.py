@@ -14,8 +14,8 @@ from tqdm import tqdm
 from constants import DATA_JSON
 from sklearn.model_selection import train_test_split
 # ---------- Config ----------
-APPEARANCE_DIR = "/kaggle/working/features/appearance"
-MOTION_DIR = "/kaggle/working/features/motion"
+APPEARANCE_DIR = "/kaggle/working/features_v2/appearance"
+MOTION_DIR = "/kaggle/working/features_v2/motion"
 # train.py
 MODEL_TEXT = "vinai/phobert-base-v2"
 
