@@ -34,7 +34,13 @@ class CrossModalQA(nn.Module):
         attention_mask: (B, C, L)
         appearance, motion: (B, T, D) hoặc (B*C, T, D)
         """
-        B, C, L = input_ids.shape
+        if input_ids.dim() == 2:
+    # Dạng inference: (B, L) -> thêm C = 1
+            input_ids = input_ids.unsqueeze(1)     # (B, 1, L)
+            attention_mask = attention_mask.unsqueeze(1)
+            B, C, L = input_ids.shape
+        else:
+            B, C, L = input_ids.shape
         device = input_ids.device
 
         # ----- Encode text -----

@@ -111,7 +111,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(MODEL_TEXT, trust_remote_code=True)
 
     test_ds = PublicTestDataset()
-    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn_inference)
+    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
 
     all_seed_preds = []
 
