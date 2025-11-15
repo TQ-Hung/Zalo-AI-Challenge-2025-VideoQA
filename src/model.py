@@ -37,54 +37,23 @@ class CrossModalQA(nn.Module):
             nn.Linear(hidden_dim // 2, 1)   # output logits per choice
         )
 
-    def forward(self, input_ids, attention_mask, appearance, motion):
-        """
-        input_ids: (B, L) hoặc (B, C, L)
-        attention_mask: (B, L) hoặc (B, C, L)
-        appearance, motion: (B, T, D) hoặc (B*C, T, D)
-        """
-        if input_ids.dim() == 2:
-            # inference: (B, L) -> thêm dim C = 1
-            input_ids = input_ids.unsqueeze(1)     # (B, 1, L)
-            attention_mask = attention_mask.unsqueeze(1)
+    # Trong file model.py → SỬA HÀM forward
+    def forward(self, input_ids, attention_mask, appearance, motion, ocr_feat=None, face_feat=None):
+        # DÙNG POOLER NHƯ KHI TRAIN
+        text_out = self.text_model(input_ids=input_ids, attention_mask=attention_mask)
+        text_feat = text_out.pooler_output  # ← PHẢI DÙNG CÁI NÀY!
 
-        B, C, L = input_ids.shape
-        device = input_ids.device
+        # Hoặc nếu bạn không muốn dùng pooler → train lại với CLS
+        # text_feat = text_out.last_hidden_state[:, 0, :]
 
-        # ----- Encode text -----
-        flat_input_ids = input_ids.view(B * C, L)
-        flat_attn = attention_mask.view(B * C, L)
-        text_out = self.text_encoder(input_ids=flat_input_ids, attention_mask=flat_attn)
-        tok_emb = self.text_proj(text_out.last_hidden_state)  # (B*C, L, hidden_dim)
+        app_proj = self.video_proj(appearance)
+        mot_proj = self.video_proj(motion)
 
-        # ----- Video embedding -----
-        if appearance.dim() == 3 and appearance.size(0) == B:
-            # chưa flatten → (B, T, D)
-            app_proj = self.video_proj(appearance)
-            mot_proj = self.video_proj(motion)
-            T = min(app_proj.size(1), mot_proj.size(1))
-            vid_tokens = (app_proj[:, :T, :] + mot_proj[:, :T, :]) / 2
-            vid_tokens_rep = vid_tokens.unsqueeze(1).repeat(1, C, 1, 1).view(B * C, T, -1)
-        else:
-            # đã flatten
-            app_proj = self.video_proj(appearance)
-            mot_proj = self.video_proj(motion)
-            T = min(app_proj.size(1), mot_proj.size(1))
-            vid_tokens_rep = (app_proj[:, :T, :] + mot_proj[:, :T, :]) / 2  # (B*C, T, H)
+        fused = text_feat + app_proj + mot_proj
+        if ocr_feat is not None and face_feat is not None:
+            ocr_proj = self.ocr_proj(ocr_feat)
+            face_proj = self.face_proj(face_feat)
+            fused = fused + ocr_proj + face_proj
 
-        # ----- Fusion -----
-        assert tok_emb.dim() == 3, f"tok_emb wrong shape: {tok_emb.shape}"
-        assert vid_tokens_rep.dim() == 3, f"vid_tokens_rep wrong shape: {vid_tokens_rep.shape}"
-
-        fused_seq = torch.cat([tok_emb, vid_tokens_rep], dim=1)  # (B*C, L+T, H)
-
-        fused_mask = torch.cat([
-            flat_attn,
-            torch.ones((B * C, vid_tokens_rep.size(1)), device=device, dtype=flat_attn.dtype)
-        ], dim=1)
-        src_key_padding_mask = (fused_mask == 0)
-
-        out = self.cross_transformer(fused_seq, src_key_padding_mask=src_key_padding_mask)
-        pooled = out[:, 0, :]
-        logits = self.classifier(pooled).view(B, C)
+        logits = self.classifier(fused)
         return logits
