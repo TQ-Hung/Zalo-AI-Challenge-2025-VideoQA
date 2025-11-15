@@ -51,7 +51,7 @@ def train():
     seed_everything()
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_TEXT, trust_remote_code=True)
-    full_ds = FeatureVideoQADataset("data.json", APPEARANCE_DIR, MOTION_DIR, tokenizer_name=MODEL_TEXT, max_len=MAX_LEN)
+    full_ds = FeatureVideoQADataset("/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/train/train.json", APPEARANCE_DIR, MOTION_DIR, tokenizer_name=MODEL_TEXT, max_len=MAX_LEN)
 
     train_idx, val_idx = train_test_split(range(len(full_ds)), test_size=VALID_SPLIT, random_state=SEED)
     train_ds = Subset(full_ds, train_idx)
