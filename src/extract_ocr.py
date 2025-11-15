@@ -24,9 +24,9 @@ else:
     print("Weight đã có sẵn!")
 
 # ------------------- Config -------------------
-VIDEO_DIR = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/train/videos"
-TRAIN_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/train/train.json"
-OUTPUT_DIR = "features_v2/ocr"
+VIDEO_DIR = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/public_test/videos"
+TRAIN_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/public_test/public_test.json"
+OUTPUT_DIR = "/kaggle/working/features_test/ocr"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 print("Loading VietOCR từ file local...")
