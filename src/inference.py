@@ -19,17 +19,15 @@ FEATURE_DIR = "/kaggle/working/features_test"
 
 APP_DIR  = f"{FEATURE_DIR}/appearance"
 MOT_DIR  = f"{FEATURE_DIR}/motion"
-OCR_FEAT_DIR  = f"{FEATURE_DIR}/ocr_feat"     # <--- Embedding .npy
-FACE_FEAT_DIR = f"{FEATURE_DIR}/face_feat"    # <--- Embedding .npy
-OCR_TEXT_DIR  = f"{FEATURE_DIR}/ocr"          # <--- OCR text (optional)
+OCR_FEAT_DIR  = f"{FEATURE_DIR}/ocr_feat"
+FACE_FEAT_DIR = f"{FEATURE_DIR}/face_feat"
+OCR_TEXT_DIR  = f"{FEATURE_DIR}/ocr"
 
 BATCH_SIZE = 16
 TTA_TIMES = 5
 ENSEMBLE_SEEDS = [42, 123, 999]
 OUTPUT_FILE = "/kaggle/working/submission.csv"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-
 
 # ------------------- DATASET -------------------
 class PublicTestDataset(Dataset):
@@ -40,10 +38,8 @@ class PublicTestDataset(Dataset):
         self.items = []
         for item in data:
             video_id = os.path.splitext(os.path.basename(item["video_path"]))[0]
-
             app_path = os.path.join(APP_DIR, f"{video_id}.npy")
             mot_path = os.path.join(MOT_DIR, f"{video_id}.npy")
-
             if not (os.path.exists(app_path) and os.path.exists(mot_path)):
                 continue
 
@@ -69,15 +65,12 @@ class PublicTestDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.items[idx]
+        appearance = torch.from_numpy(np.load(item["app_path"]))
+        motion = torch.from_numpy(np.load(item["mot_path"]))
 
-        appearance = torch.from_numpy(np.load(item["app_path"]))   # (1,2048)
-        motion     = torch.from_numpy(np.load(item["mot_path"]))   # (1,2048)
-
-        # Optional features
         ocr_feat  = torch.from_numpy(np.load(item["ocr_feat_path"]))  if item["ocr_feat_path"]  else None
         face_feat = torch.from_numpy(np.load(item["face_feat_path"])) if item["face_feat_path"] else None
 
-        # OCR text
         ocr_text = ""
         if item["ocr_text_path"]:
             with open(item["ocr_text_path"], "r", encoding="utf-8") as f:
@@ -94,7 +87,6 @@ class PublicTestDataset(Dataset):
             "face_feat": face_feat
         }
 
-
 def collate_fn(batch):
     return {
         "qids": [b["question_id"] for b in batch],
@@ -104,7 +96,6 @@ def collate_fn(batch):
         "ocr_feat":  torch.stack([b["ocr_feat"]  for b in batch]) if batch[0]["ocr_feat"]  is not None else None,
         "face_feat": torch.stack([b["face_feat"] for b in batch]) if batch[0]["face_feat"] is not None else None,
     }
-
 
 # ------------------- MAIN -------------------
 def main():
@@ -125,28 +116,23 @@ def main():
         model.eval()
 
         seed_preds = []
-
         with torch.no_grad():
             for batch in tqdm(test_loader, desc=f"Seed {seed}"):
-
                 encoded = tokenizer(batch["questions"], padding=True, truncation=True, max_length=64, return_tensors="pt")
                 input_ids = encoded["input_ids"].to(DEVICE)
                 attention_mask = encoded["attention_mask"].to(DEVICE)
 
                 appearance = batch["appearance"].to(DEVICE)
                 motion = batch["motion"].to(DEVICE)
-
                 ocr_feat  = batch["ocr_feat"].to(DEVICE)  if batch["ocr_feat"]  is not None else None
                 face_feat = batch["face_feat"].to(DEVICE) if batch["face_feat"] is not None else None
 
-                # TTA
                 tta_logits = []
                 for t in range(TTA_TIMES):
                     noise = 0.02 if t > 0 else 0.0
                     app = appearance + torch.randn_like(appearance) * noise
                     mot = motion + torch.randn_like(motion) * noise
 
-                    # AUTO-SELECT MODEL MODE (2 or 4 inputs)
                     if ocr_feat is not None and face_feat is not None:
                         logits = model(input_ids, attention_mask, app, mot, ocr_feat, face_feat)
                     else:
@@ -159,29 +145,23 @@ def main():
 
         all_seed_preds.append(seed_preds)
 
-    # ----------------- ENSEMBLE -----------------
-    # all_seed_preds: shape (num_seeds, num_samples)
-    all_seed_preds = np.array(all_seed_preds)  # (num_seeds, N)
-
-    # Majority vote
+    # ----------------- ENSEMBLE (majority vote) -----------------
+    all_seed_preds = np.array(all_seed_preds)  # (num_seeds, num_samples)
     final_preds = []
     for i in range(all_seed_preds.shape[1]):
         values, counts = np.unique(all_seed_preds[:, i], return_counts=True)
         final_preds.append(values[np.argmax(counts)])
     final_preds = np.array(final_preds)
 
-    # Map to labels
     id_to_label = {0: "A", 1: "B", 2: "C", 3: "D"}
     final_labels = [id_to_label[int(p)] for p in final_preds]
 
-    # Save submission
     submission = [{"question_id": qid, "answer": label}
                   for qid, label in zip([item["question_id"] for item in test_ds.items], final_labels)]
 
     import pandas as pd
     df = pd.DataFrame(submission)
     df.to_csv(OUTPUT_FILE, index=False)
-
     print(f"\nSaved submission to {OUTPUT_FILE}")
 
 if __name__ == "__main__":
