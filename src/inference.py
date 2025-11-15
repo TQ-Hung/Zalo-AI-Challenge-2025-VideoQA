@@ -1,5 +1,4 @@
 # src/inference.py
-# SIÊU ỔN ĐỊNH – DÙNG POOLER + FLOAT32 + TTA + ENSEMBLE
 import os
 import json
 import torch
@@ -19,9 +18,8 @@ MOT_DIR = f"{FEATURE_DIR}/motion"
 OCR_TEXT_DIR = f"{FEATURE_DIR}/ocr"
 
 BATCH_SIZE = 32
-TTA_TIMES = 3  # Giảm để nhanh hơn
-ENSEMBLE_SEEDS = [42]
-OUTPUT_FILE = "/kaggle/working/submission.csv"
+TTA_TIMES = 3  # test-time augmentation
+OUTPUT_FILE = "/kaggle/working/submission_2.csv"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ------------------- DATASET -------------------
@@ -84,7 +82,9 @@ def main():
     test_ds = PublicTestDataset()
     if len(test_ds) == 0:
         return
-    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=0)
+
+    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False,
+                             collate_fn=collate_fn, num_workers=0)
 
     model = EarlyFusionQA(text_model_name=MODEL_TEXT).to(DEVICE)
     ckpt = torch.load(CHECKPOINT, map_location=DEVICE)
@@ -94,21 +94,26 @@ def main():
     all_preds = []
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Inference"):
-            encoded = tokenizer(batch["questions"], padding=True, truncation=True, max_length=64, return_tensors="pt")
+            # Tokenize questions
+            encoded = tokenizer(batch["questions"], padding=True, truncation=True,
+                                max_length=64, return_tensors="pt")
             input_ids = encoded["input_ids"].to(DEVICE)
             attention_mask = encoded["attention_mask"].to(DEVICE)
             appearance = batch["appearance"].to(DEVICE)
             motion = batch["motion"].to(DEVICE)
 
+            # TTA
             tta_logits = []
-            for _ in range(TTA_TIMES):
-                noise = 0.02 if _ > 0 else 0.0
+            for tta in range(TTA_TIMES):
+                noise = 0.02 if tta > 0 else 0.0
                 app = appearance + torch.randn_like(appearance) * noise
                 mot = motion + torch.randn_like(motion) * noise
-                logits = model(input_ids, attention_mask, app, mot)
+                logits = model(input_ids, attention_mask, app, mot)  # shape: (B, num_choices)
                 tta_logits.append(logits)
             avg_logits = torch.stack(tta_logits).mean(0)
-            pred = avg_logits.argmax(dim=1).cpu().numpy()
+
+            # argmax trên trục class
+            pred = avg_logits.argmax(dim=-1).cpu().numpy()
             all_preds.extend(pred.tolist())
 
     id_to_label = {0: "A", 1: "B", 2: "C", 3: "D"}
