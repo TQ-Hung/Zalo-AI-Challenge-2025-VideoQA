@@ -160,9 +160,9 @@ def main():
         all_seed_preds.append(seed_preds)
 
     # Ensemble
-    final_preds = np.array(all_seed_preds).mean(axis=0).argmax(axis=0)
+    final_preds = np.asarray(final_preds).reshape(-1)
     id_to_label = {0: "A", 1: "B", 2: "C", 3: "D"}
-    final_labels = [id_to_label[p] for p in final_preds]
+    final_labels = [id_to_label[int(p)] for p in final_preds]
 
     # Save
     submission = [{"question_id": qid, "answer": label}
