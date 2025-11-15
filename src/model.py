@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 from transformers import AutoModel
 
-
 class CrossModalQA(nn.Module):
     def __init__(
         self,
@@ -13,8 +12,7 @@ class CrossModalQA(nn.Module):
         hidden_dim=512,
         n_heads=8,
         n_layers=3,
-        dropout=0.2,
-        text_pooling="cls",
+        dropout=0.3,  # tăng dropout để giảm overfit
     ):
         super().__init__()
 
@@ -43,43 +41,33 @@ class CrossModalQA(nn.Module):
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim // 2, 1),
+            nn.Linear(hidden_dim // 2, 1)
         )
 
-    def forward(
-        self,
-        input_ids,
-        attention_mask,
-        appearance,
-        motion,
-        ocr_feat=None,
-        face_feat=None,
-    ):
+    def forward(self, input_ids, attention_mask, appearance, motion, ocr_feat=None, face_feat=None):
         """
         Supports 2-input or 4-input mode automatically.
         input_ids: (B, L) or (B, C, L)
-        attention_mask: (B, L) or (B, C, L)
         appearance, motion, ocr_feat, face_feat: (B, T, D)
         """
-
-        # Handle batch dimension for text
+        # handle batch dim
         if input_ids.dim() == 2:
             input_ids = input_ids.unsqueeze(1)
             attention_mask = attention_mask.unsqueeze(1)
         B, C, L = input_ids.shape
         device = input_ids.device
 
-        # ----- Text encoding -----
+        # ----- Text -----
         flat_input_ids = input_ids.view(B * C, L)
         flat_attn = attention_mask.view(B * C, L)
         text_out = self.text_encoder(input_ids=flat_input_ids, attention_mask=flat_attn)
         tok_emb = self.text_proj(text_out.last_hidden_state)  # (B*C, L, H)
 
-        # ----- Video encoding -----
+        # ----- Video -----
         app_proj = self.video_proj(appearance)
         mot_proj = self.video_proj(motion)
         T = min(app_proj.size(1), mot_proj.size(1))
-        vid_tokens = (app_proj[:, :T, :] + mot_proj[:, :T, :]) / 2  # (B, T, H)
+        vid_tokens = (app_proj[:, :T, :] + mot_proj[:, :T, :]) / 2
 
         # Optional features
         if ocr_feat is not None and face_feat is not None:
@@ -89,7 +77,7 @@ class CrossModalQA(nn.Module):
             extra_tokens = (ocr_proj[:, :T_feat, :] + face_proj[:, :T_feat, :]) / 2
             vid_tokens = torch.cat([vid_tokens, extra_tokens], dim=1)
 
-        # Repeat for C if needed
+        # repeat for C
         vid_tokens_rep = vid_tokens.unsqueeze(1).repeat(1, C, 1, 1).view(B * C, vid_tokens.size(1), -1)
 
         # ----- Fusion -----
@@ -102,7 +90,7 @@ class CrossModalQA(nn.Module):
 
         out = self.cross_transformer(fused_seq, src_key_padding_mask=src_key_padding_mask)
 
-        # Pooling and classification
+        # Pooling + classifier
         pooled = out[:, 0, :]
         logits = self.classifier(pooled).view(B, C)
         return logits

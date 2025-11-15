@@ -1,24 +1,17 @@
 # src/train.py
-import os
-import re
-import math
-import torch
-import random
-import numpy as np
-from torch.utils.data import DataLoader
+import os, random, torch, numpy as np
+from torch.utils.data import DataLoader, Subset
 from transformers import AutoTokenizer
 from datasets import FeatureVideoQADataset, collate_fn
-from model import CrossModalQA as EarlyFusionQA
+from model import CrossModalQA
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
-from constants import DATA_JSON
 from sklearn.model_selection import train_test_split
+
 # ---------- Config ----------
 APPEARANCE_DIR = "/kaggle/working/features_v2/appearance"
 MOTION_DIR = "/kaggle/working/features_v2/motion"
-# train.py
 MODEL_TEXT = "vinai/phobert-base-v2"
-
 BATCH_SIZE = 16
 MAX_LEN = 64
 LR = 2e-5
@@ -27,25 +20,14 @@ WEIGHT_DECAY = 0.01
 OUTPUT_DIR = "checkpoints"
 VALID_SPLIT = 0.1
 SEED = 42
-
-USE_FP16 = True         # enable AMP
-ACCUM_STEPS = 2         # gradient accumulation
-UNFREEZE_LAST_N = 3     # unfreeze last N layers of BERT
-EARLYSTOP_PATIENCE = 20  # early stopping patience (epochs)
-CLIP_NORM = 1.0         # gradient clipping
+USE_FP16 = True
+ACCUM_STEPS = 2
+UNFREEZE_LAST_N = 3
+EARLYSTOP_PATIENCE = 5  # dừng sớm khi val không cải thiện
+CLIP_NORM = 1.0
 NUM_WORKERS = 4
+
 # ----------------------------
-def get_question_type(question: str) -> str:
-    q = question.lower()
-    if any(k in q for k in ["biển báo", "tốc độ", "cấm", "hiệu lệnh", "đèn"]):
-        return "sign_signal"
-    elif any(k in q for k in ["rẽ", "xi-nhan", "đổi làn", "vượt", "dừng"]):
-        return "action"
-    elif any(k in q for k in ["phía trước", "bên trái", "bên phải", "phía sau"]):
-        return "position"
-    else:
-        return "other"
-    
 def seed_everything(seed=SEED):
     random.seed(seed)
     np.random.seed(seed)
@@ -54,135 +36,76 @@ def seed_everything(seed=SEED):
         torch.cuda.manual_seed_all(seed)
 
 def unfreeze_last_n(text_encoder, n=3):
-    # freeze all first
     for param in text_encoder.parameters():
         param.requires_grad = False
-    # unfreeze last n layers
-    try:
-        # huggingface bert-like: encoder.layer is a ModuleList
+    if hasattr(text_encoder, "encoder"):
         for layer in text_encoder.encoder.layer[-n:]:
             for p in layer.parameters():
                 p.requires_grad = True
-        # also unfreeze pooler if exists
-        if hasattr(text_encoder, "pooler"):
-            for p in text_encoder.pooler.parameters():
-                p.requires_grad = True
-    except Exception:
-        # fallback: unfreeze last n parameters if structure unknown
-        params = list(text_encoder.parameters())
-        for p in params[-n:]:
+    if hasattr(text_encoder, "pooler"):
+        for p in text_encoder.pooler.parameters():
             p.requires_grad = True
 
+# ---------- Training ----------
 def train():
     seed_everything()
 
-    # tokenizer + dataset
-    # tokenizer = AutoTokenizer.from_pretrained(
-    #     MODEL_TEXT,
-    #     use_auth_token=os.getenv("HUGGINGFACE_TOKEN"),
-    #     trust_remote_code=True,
-    # )
-    tokenizer = AutoTokenizer.from_pretrained(
-        MODEL_TEXT,
-        use_auth_token=os.getenv("HUGGINGFACE_TOKEN", None),
-        trust_remote_code=True,
-        ignore_chat_template_errors=True
-    )
-    full_ds = FeatureVideoQADataset(
-        DATA_JSON, APPEARANCE_DIR, MOTION_DIR,
-        tokenizer_name=MODEL_TEXT, max_len=MAX_LEN
-    )
-    labels_for_stratify = []
-    for item in full_ds.items:
-        q = item["question"]
-        label = get_question_type(q)
-        # Kết hợp với answer để tăng độ phân biệt
-        ans = item.get("answer", "")
-        labels_for_stratify.append(f"{label}_{ans[:10]}")
-    train_idx, val_idx = train_test_split(
-        range(len(full_ds)),
-        test_size=VALID_SPLIT,
-        random_state=SEED
-    )
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_TEXT, trust_remote_code=True)
+    full_ds = FeatureVideoQADataset("data.json", APPEARANCE_DIR, MOTION_DIR, tokenizer_name=MODEL_TEXT, max_len=MAX_LEN)
 
-    from torch.utils.data import Subset
+    train_idx, val_idx = train_test_split(range(len(full_ds)), test_size=VALID_SPLIT, random_state=SEED)
     train_ds = Subset(full_ds, train_idx)
     val_ds = Subset(full_ds, val_idx)
 
-    print("Train data loading ...")
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
-                              collate_fn=collate_fn, num_workers=NUM_WORKERS)
-    print("Val data loading ...")
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False,
-                            collate_fn=collate_fn, num_workers=NUM_WORKERS)
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn, num_workers=NUM_WORKERS)
+    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=NUM_WORKERS)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ngpu = torch.cuda.device_count()
-    print(f"Device: {device}, GPUs available: {ngpu}")
+    print(f"Device: {device}, GPUs: {ngpu}")
 
-    # build model and optionally unfreeze some BERT layers
-    model = EarlyFusionQA(text_model_name=MODEL_TEXT)
+    model = CrossModalQA(text_model_name=MODEL_TEXT).to(device)
+    unfreeze_last_n(model.text_encoder, UNFREEZE_LAST_N)
+    print(f"Unfroze last {UNFREEZE_LAST_N} layers of text encoder.")
 
-    # unfreeze last n layers on model.text_encoder BEFORE wrapping with DataParallel
-    if hasattr(model, "text_encoder"):
-        unfreeze_last_n(model.text_encoder, UNFREEZE_LAST_N)
-        print(f"Unfroze last {UNFREEZE_LAST_N} layers of text encoder.")
-    model.to(device)
-
-    # wrap with DataParallel if multiple GPUs
     if ngpu > 1:
         model = torch.nn.DataParallel(model)
-        print("Using DataParallel with", ngpu, "GPUs")
 
-    # Prepare optimizer parameter groups:
-    # handle DataParallel (module) vs single model
+    # Optimizer + scheduler
     model_for_params = model.module if hasattr(model, "module") else model
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
         {
-            "params": [
-                p for n, p in model_for_params.text_encoder.named_parameters()
-                if not any(nd in n for nd in no_decay)
-            ],
+            "params": [p for n, p in model_for_params.text_encoder.named_parameters() if not any(nd in n for nd in no_decay)],
             "weight_decay": WEIGHT_DECAY,
             "lr": LR,
         },
         {
-            "params": [
-                p for n, p in model_for_params.text_encoder.named_parameters()
-                if any(nd in n for nd in no_decay)
-            ],
+            "params": [p for n, p in model_for_params.text_encoder.named_parameters() if any(nd in n for nd in no_decay)],
             "weight_decay": 0.0,
             "lr": LR,
         },
         {
-            "params": [
-                p for n, p in model_for_params.named_parameters()
-                if not n.startswith("text_encoder")
-            ],
+            "params": [p for n, p in model_for_params.named_parameters() if not n.startswith("text_encoder")],
             "weight_decay": WEIGHT_DECAY,
             "lr": LR * 5,
         },
     ]
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=LR)
-
-    # Use ReduceLROnPlateau to reduce LR when val acc plateaus
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=1, verbose=True)
-
     scaler = GradScaler(enabled=USE_FP16)
-    
+
     best_val = 0.0
     epochs_no_improve = 0
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     for epoch in range(EPOCHS):
         model.train()
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS} train")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
         total_loss = 0.0
         optimizer.zero_grad()
 
         for step, batch in enumerate(pbar):
-            # get inputs
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             appearance = batch["appearance_feats"].to(device)
@@ -194,14 +117,10 @@ def train():
                 loss = torch.nn.functional.cross_entropy(logits, labels)
                 loss = loss / ACCUM_STEPS
 
-            # backward with scaler
             scaler.scale(loss).backward()
 
-            # gradient accumulation step
             if (step + 1) % ACCUM_STEPS == 0 or (step + 1) == len(train_loader):
-                # unscale before clipping
                 scaler.unscale_(optimizer)
-                # gradient clipping
                 torch.nn.utils.clip_grad_norm_(model.parameters(), CLIP_NORM)
                 scaler.step(optimizer)
                 scaler.update()
@@ -210,40 +129,29 @@ def train():
             total_loss += loss.item() * ACCUM_STEPS
             pbar.set_postfix({"loss": total_loss / (step + 1)})
 
-        # validation
         val_acc = evaluate(model, val_loader, device)
         print(f"Epoch {epoch+1} val_acc: {val_acc:.4f}")
-
-        # scheduler step based on val metric
         scheduler.step(val_acc)
 
-        # early stopping + save best
         if val_acc > best_val:
             best_val = val_acc
             epochs_no_improve = 0
             save_path = os.path.join(OUTPUT_DIR, "best.pt")
-            # if DataParallel, save module's state_dict
             to_save = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
-            torch.save({
-                "model": to_save,
-                "optimizer": optimizer.state_dict(),
-                "epoch": epoch,
-                "val_acc": val_acc
-            }, save_path)
+            torch.save({"model": to_save, "optimizer": optimizer.state_dict(), "epoch": epoch, "val_acc": val_acc}, save_path)
             print("✅ Saved best checkpoint.")
         else:
             epochs_no_improve += 1
             print(f"No improvement for {epochs_no_improve} epoch(s).")
             if epochs_no_improve >= EARLYSTOP_PATIENCE:
-                print("Early stopping triggered. Stopping training.")
+                print("Early stopping triggered.")
                 break
 
     print("Training done. Best val:", best_val)
 
 def evaluate(model, loader, device):
     model.eval()
-    total = 0
-    correct = 0
+    total, correct = 0, 0
     with torch.no_grad():
         for batch in tqdm(loader, desc="Eval"):
             input_ids = batch["input_ids"].to(device)
