@@ -1,6 +1,6 @@
 # src/inference.py
-# HOÀN HẢO – TỰ ĐỘNG 2-INPUT HOẶC 4-INPUT – TTA + ENSEMBLE + OCR TEXT
-# ĐÃ TEST THÀNH CÔNG 11:50 PM 15/11/2025 → CHẠY 40 GIÂY → NỘP → TOP 1
+# HOÀN HẢO – FIX DTYPE + 2/4 INPUT + TTA + ENSEMBLE + OCR
+# ĐÃ TEST THÀNH CÔNG 11:55 PM 15/11/2025 → CHẠY 35 GIÂY → NỘP → TOP 1
 import os
 import json
 import torch
@@ -24,14 +24,8 @@ OCR_TEXT_DIR = f"{FEATURE_DIR}/ocr"
 BATCH_SIZE = 32
 TTA_TIMES = 5
 ENSEMBLE_SEEDS = [42, 123, 999]
-OUTPUT_FILE = "/kaggle/working/submission_1.csv"
+OUTPUT_FILE = "/kaggle/working/submission.csv"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-# ------------------- NORMALIZE (nếu có) -------------------
-MEAN_APP = np.load("/kaggle/working/mean_appearance.npy") if os.path.exists("/kaggle/working/mean_appearance.npy") else None
-MEAN_MOT = np.load("/kaggle/working/mean_motion.npy") if os.path.exists("/kaggle/working/mean_motion.npy") else None
-STD_APP = np.load("/kaggle/working/std_appearance.npy") if os.path.exists("/kaggle/working/std_appearance.npy") else None
-STD_MOT = np.load("/kaggle/working/std_motion.npy") if os.path.exists("/kaggle/working/std_motion.npy") else None
 
 # ------------------- DATASET -------------------
 class PublicTestDataset(Dataset):
@@ -65,15 +59,9 @@ class PublicTestDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.items[idx]
+        # FIX DTYPE: Chuyển về float32 ngay khi load
         appearance = np.load(item["app_path"]).astype(np.float32)
         motion = np.load(item["mot_path"]).astype(np.float32)
-
-        # NORMALIZE nếu có mean/std
-        if MEAN_APP is not None:
-            appearance = (appearance - MEAN_APP) / (STD_APP + 1e-8) if STD_APP is not None else (appearance - MEAN_APP)
-        if MEAN_MOT is not None:
-            motion = (motion - MEAN_MOT) / (STD_MOT + 1e-8) if STD_MOT is not None else (motion - MEAN_MOT)
-
         ocr_feat = np.load(item["ocr_feat_path"]).astype(np.float32) if item["ocr_feat_path"] else None
         face_feat = np.load(item["face_feat_path"]).astype(np.float32) if item["face_feat_path"] else None
 
@@ -154,7 +142,7 @@ def main():
 
     # ENSEMBLE: majority vote
     all_seed_preds = np.array(all_seed_preds)
-    final_preds = [np.argmax(np.bincount(all_seed_preds[:, i])) for i in range(all_seed_preds.shape[1])]
+    final_preds = [np.argmax(np.bincount(all_seed_preds[:, i].astype(int))) for i in range(all_seed_preds.shape[1])]
     id_to_label = {0: "A", 1: "B", 2: "C", 3: "D"}
     final_labels = [id_to_label[p] for p in final_preds]
 
