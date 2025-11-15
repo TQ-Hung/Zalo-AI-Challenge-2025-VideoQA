@@ -24,7 +24,7 @@ OCR_TEXT_DIR = f"{FEATURE_DIR}/ocr"
 BATCH_SIZE = 32
 TTA_TIMES = 5
 ENSEMBLE_SEEDS = [42, 123, 999]
-OUTPUT_FILE = "/kaggle/working/submission.csv"
+OUTPUT_FILE = "/kaggle/working/submission_1.csv"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ------------------- DATASET -------------------
