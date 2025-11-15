@@ -1,4 +1,3 @@
-# src/inference.py
 import os
 import json
 import torch
@@ -6,7 +5,7 @@ import numpy as np
 from tqdm import tqdm
 from transformers import AutoTokenizer
 from torch.utils.data import Dataset, DataLoader
-from model import CrossModalQA as EarlyFusionQA
+from model import CrossModalQA
 
 # ------------------- CONFIG -------------------
 MODEL_TEXT = "vinai/phobert-base-v2"
@@ -18,8 +17,8 @@ MOT_DIR = f"{FEATURE_DIR}/motion"
 OCR_TEXT_DIR = f"{FEATURE_DIR}/ocr"
 
 BATCH_SIZE = 32
-TTA_TIMES = 3  # test-time augmentation
-OUTPUT_FILE = "/kaggle/working/submission_2.csv"
+TTA_TIMES = 3
+OUTPUT_FILE = "/kaggle/working/submission.csv"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ------------------- DATASET -------------------
@@ -52,14 +51,11 @@ class PublicTestDataset(Dataset):
         item = self.items[idx]
         appearance = np.load(item["app_path"]).astype(np.float32)
         motion = np.load(item["mot_path"]).astype(np.float32)
-
         ocr_text = ""
         if item["ocr_text_path"]:
             with open(item["ocr_text_path"], "r", encoding="utf-8") as f:
                 ocr_text = f.read().strip()
-
         question = f"[OCR: {ocr_text}] {item['question']}" if ocr_text else item['question']
-
         return {
             "question_id": item["question_id"],
             "question": question,
@@ -80,55 +76,45 @@ def main():
     print(f"Using device: {DEVICE}")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_TEXT, trust_remote_code=True)
     test_ds = PublicTestDataset()
-    if len(test_ds) == 0:
-        return
+    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
 
-    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False,
-                             collate_fn=collate_fn, num_workers=0)
-
-    model = EarlyFusionQA(text_model_name=MODEL_TEXT).to(DEVICE)
+    model = CrossModalQA(text_model_name=MODEL_TEXT).to(DEVICE)
     ckpt = torch.load(CHECKPOINT, map_location=DEVICE)
     model.load_state_dict(ckpt["model"])
     model.eval()
 
     all_preds = []
     with torch.no_grad():
-        for batch in tqdm(test_loader, desc="Inference"):
-            # Tokenize questions
-            encoded = tokenizer(batch["questions"], padding=True, truncation=True,
-                                max_length=64, return_tensors="pt")
+        for batch in tqdm(test_loader):
+            encoded = tokenizer(batch["questions"], padding=True, truncation=True, max_length=64, return_tensors="pt")
             input_ids = encoded["input_ids"].to(DEVICE)
             attention_mask = encoded["attention_mask"].to(DEVICE)
             appearance = batch["appearance"].to(DEVICE)
             motion = batch["motion"].to(DEVICE)
 
-            # TTA
             tta_logits = []
-            for tta in range(TTA_TIMES):
-                noise = 0.02 if tta > 0 else 0.0
+            for _ in range(TTA_TIMES):
+                noise = 0.02 if _ > 0 else 0.0
                 app = appearance + torch.randn_like(appearance) * noise
                 mot = motion + torch.randn_like(motion) * noise
-                logits = model(input_ids, attention_mask, app, mot)  # shape: (B, num_choices)
+                logits = model(input_ids, attention_mask, app, mot)
+                # logits: (B, C, num_classes)
+                logits = logits.squeeze(-1) if logits.size(-1) == 1 else logits
                 tta_logits.append(logits)
-            avg_logits = torch.stack(tta_logits).mean(0)
 
-            # argmax trên trục class
-            pred = avg_logits.argmax(dim=-1).cpu().numpy()
+            avg_logits = torch.stack(tta_logits).mean(0)
+            pred = avg_logits.argmax(dim=1).cpu().numpy()
             all_preds.extend(pred.tolist())
 
     id_to_label = {0: "A", 1: "B", 2: "C", 3: "D"}
     final_labels = [id_to_label[p] for p in all_preds]
 
-    submission = [{"question_id": qid, "answer": label}
-                  for qid, label in zip([item["question_id"] for item in test_ds.items], final_labels)]
-
     import pandas as pd
-    df = pd.DataFrame(submission)
+    df = pd.DataFrame([{"question_id": qid, "answer": label} 
+                       for qid, label in zip([item["question_id"] for item in test_ds.items], final_labels)])
     df.to_csv(OUTPUT_FILE, index=False)
-    print(f"\nSUBMISSION SẴN SÀNG!")
-    print(f"→ File: {OUTPUT_FILE}")
-    print(f"→ Phân bố: A:{final_labels.count('A')}, B:{final_labels.count('B')}, C:{final_labels.count('C')}, D:{final_labels.count('D')}")
-    print("NỘP NGAY TRƯỚC 12:00 AM!")
+    print(f"SUBMISSION READY: {OUTPUT_FILE}")
+    print(f"Distribution: A:{final_labels.count('A')}, B:{final_labels.count('B')}, C:{final_labels.count('C')}, D:{final_labels.count('D')}")
 
 if __name__ == "__main__":
     main()

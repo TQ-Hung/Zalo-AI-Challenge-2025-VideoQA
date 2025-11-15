@@ -113,14 +113,7 @@ def train():
             labels = batch["labels"].to(device)
 
             with autocast(enabled=USE_FP16):
-                logits = model(input_ids, attention_mask, appearance, motion, num_choices=len(batch["choices"]))
-                # nếu list
-                if isinstance(logits, list):
-                    loss = sum(torch.nn.functional.cross_entropy(l, labels[i].unsqueeze(0)) for i, l in enumerate(logits)) / len(logits)
-                else:
-                    # logits: (B, C, num_classes) => chọn đúng dimension
-                    logits_ce = logits.squeeze(2)  # nếu num_classes=C
-                    loss = torch.nn.functional.cross_entropy(logits_ce, labels)
+                logits = model(input_ids, attention_mask, appearance, motion)
                 loss = torch.nn.functional.cross_entropy(logits, labels)
                 loss = loss / ACCUM_STEPS
 

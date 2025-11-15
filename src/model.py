@@ -1,4 +1,3 @@
-# src/model.py
 import torch
 import torch.nn as nn
 from transformers import AutoModel
@@ -12,8 +11,8 @@ class CrossModalQA(nn.Module):
         hidden_dim=512,
         n_heads=8,
         n_layers=3,
-        dropout=0.3,      # tăng dropout để giảm overfit
-        num_classes=4      # số lựa chọn tối đa (có thể 2 hoặc 4)
+        dropout=0.3,
+        num_classes=4  # max số lựa chọn
     ):
         super().__init__()
 
@@ -54,17 +53,12 @@ class CrossModalQA(nn.Module):
         motion,
         ocr_feat=None,
         face_feat=None,
-        num_choices=None  # số lựa chọn thực tế
     ):
         """
-        Hỗ trợ 2-input hoặc 4-input mode tự động
-        input_ids: (B, L) hoặc (B, C, L)
-        attention_mask: (B, L) hoặc (B, C, L)
-        appearance, motion, ocr_feat, face_feat: (B, T, D)
-        num_choices: số lựa chọn thực tế của từng sample (2 hoặc 4)
+        input_ids: (B, C, L)
+        attention_mask: (B, C, L)
+        appearance, motion: (B, T, D)
         """
-
-        # ----- handle batch dim -----
         if input_ids.dim() == 2:
             input_ids = input_ids.unsqueeze(1)
             attention_mask = attention_mask.unsqueeze(1)
@@ -83,14 +77,6 @@ class CrossModalQA(nn.Module):
         T = min(app_proj.size(1), mot_proj.size(1))
         vid_tokens = (app_proj[:, :T, :] + mot_proj[:, :T, :]) / 2
 
-        # ----- Optional extra features -----
-        if ocr_feat is not None and face_feat is not None:
-            ocr_proj = self.ocr_proj(ocr_feat)
-            face_proj = self.face_proj(face_feat)
-            T_feat = min(ocr_proj.size(1), face_proj.size(1))
-            extra_tokens = (ocr_proj[:, :T_feat, :] + face_proj[:, :T_feat, :]) / 2
-            vid_tokens = torch.cat([vid_tokens, extra_tokens], dim=1)
-
         # ----- Repeat for C choices -----
         vid_tokens_rep = vid_tokens.unsqueeze(1).repeat(1, C, 1, 1).view(B * C, vid_tokens.size(1), -1)
 
@@ -101,7 +87,6 @@ class CrossModalQA(nn.Module):
             torch.ones((B * C, vid_tokens_rep.size(1)), device=device, dtype=flat_attn.dtype)
         ], dim=1)
         src_key_padding_mask = (fused_mask == 0)
-
         out = self.cross_transformer(fused_seq, src_key_padding_mask=src_key_padding_mask)
 
         # ----- Pooling + classifier -----
@@ -111,13 +96,4 @@ class CrossModalQA(nn.Module):
 
         # ----- reshape -----
         logits = logits.view(B, C, -1)  # (B, C, num_classes)
-
-        # nếu num_choices được chỉ định, cắt logits theo số lựa chọn thực tế
-        if num_choices is not None:
-            clipped_logits = []
-            for i, n in enumerate(num_choices):
-                clipped_logits.append(logits[i, :n, :])
-            # trả về list of tensors (num_choices[i], num_classes)
-            return clipped_logits
-        else:
-            return logits  # (B, C, num_classes)
+        return logits
