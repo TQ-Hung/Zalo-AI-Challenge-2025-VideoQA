@@ -5,42 +5,50 @@ from transformers import AutoModel
 
 
 class CrossModalQA(nn.Module):
-    def __init__(self, text_model_name="vinai/phobert-base-v2",
-             video_feat_dim=768, text_dim=768, hidden_dim=512,
-             n_heads=8, n_layers=3, dropout=0.2, text_pooling="cls"):
+    def __init__(self, 
+                 text_model_name="vinai/phobert-base-v2",
+                 video_feat_dim=768, text_dim=768, hidden_dim=512,
+                 n_heads=8, n_layers=3, dropout=0.2, text_pooling="cls"):
         super().__init__()
-        self.text_encoder = AutoModel.from_pretrained(text_model_name, return_dict=True)
 
+        # ----- Text encoder -----
+        self.text_encoder = AutoModel.from_pretrained(text_model_name, return_dict=True)
         self.text_proj = nn.Linear(text_dim, hidden_dim)
+
+        # ----- Video projection -----
         self.video_proj = nn.Linear(video_feat_dim, hidden_dim)
 
+        # ----- Cross-modal transformer -----
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_dim, nhead=n_heads,
-            dim_feedforward=hidden_dim * 4, dropout=dropout, batch_first=True
+            d_model=hidden_dim,
+            nhead=n_heads,
+            dim_feedforward=hidden_dim * 4,
+            dropout=dropout,
+            batch_first=True
         )
         self.cross_transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
 
+        # ----- Classifier -----
         self.classifier = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim // 2, 1)
+            nn.Linear(hidden_dim // 2, 1)   # output logits per choice
         )
 
     def forward(self, input_ids, attention_mask, appearance, motion):
         """
-        input_ids: (B, C, L)
-        attention_mask: (B, C, L)
+        input_ids: (B, L) hoặc (B, C, L)
+        attention_mask: (B, L) hoặc (B, C, L)
         appearance, motion: (B, T, D) hoặc (B*C, T, D)
         """
         if input_ids.dim() == 2:
-    # Dạng inference: (B, L) -> thêm C = 1
+            # inference: (B, L) -> thêm dim C = 1
             input_ids = input_ids.unsqueeze(1)     # (B, 1, L)
             attention_mask = attention_mask.unsqueeze(1)
-            B, C, L = input_ids.shape
-        else:
-            B, C, L = input_ids.shape
+
+        B, C, L = input_ids.shape
         device = input_ids.device
 
         # ----- Encode text -----
@@ -50,10 +58,9 @@ class CrossModalQA(nn.Module):
         tok_emb = self.text_proj(text_out.last_hidden_state)  # (B*C, L, hidden_dim)
 
         # ----- Video embedding -----
-        # có thể đã được flatten (B*C, T, D)
         if appearance.dim() == 3 and appearance.size(0) == B:
             # chưa flatten → (B, T, D)
-            app_proj = self.video_proj(appearance)  # (B, T, H)
+            app_proj = self.video_proj(appearance)
             mot_proj = self.video_proj(motion)
             T = min(app_proj.size(1), mot_proj.size(1))
             vid_tokens = (app_proj[:, :T, :] + mot_proj[:, :T, :]) / 2
@@ -66,7 +73,6 @@ class CrossModalQA(nn.Module):
             vid_tokens_rep = (app_proj[:, :T, :] + mot_proj[:, :T, :]) / 2  # (B*C, T, H)
 
         # ----- Fusion -----
-        # kiểm tra dimensions
         assert tok_emb.dim() == 3, f"tok_emb wrong shape: {tok_emb.shape}"
         assert vid_tokens_rep.dim() == 3, f"vid_tokens_rep wrong shape: {vid_tokens_rep.shape}"
 
