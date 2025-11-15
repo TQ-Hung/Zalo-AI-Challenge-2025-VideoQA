@@ -12,8 +12,8 @@ class CrossModalQA(nn.Module):
         hidden_dim=512,
         n_heads=8,
         n_layers=3,
-        dropout=0.3,  # tăng dropout để giảm overfit
-        num_classes=4  # số lựa chọn tối đa, có thể 2 hoặc 4
+        dropout=0.3,      # tăng dropout để giảm overfit
+        num_classes=4      # số lựa chọn tối đa (có thể 2 hoặc 4)
     ):
         super().__init__()
 
@@ -114,11 +114,10 @@ class CrossModalQA(nn.Module):
 
         # nếu num_choices được chỉ định, cắt logits theo số lựa chọn thực tế
         if num_choices is not None:
-            max_choices = logits.size(1)
             clipped_logits = []
             for i, n in enumerate(num_choices):
                 clipped_logits.append(logits[i, :n, :])
-            # tạo batch padding nếu cần (hoặc trả về list)
-            return clipped_logits  # list of tensors (num_choices[i], num_classes)
+            # trả về list of tensors (num_choices[i], num_classes)
+            return clipped_logits
         else:
             return logits  # (B, C, num_classes)
