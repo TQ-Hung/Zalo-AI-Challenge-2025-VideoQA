@@ -159,12 +159,22 @@ def main():
 
         all_seed_preds.append(seed_preds)
 
-    # Ensemble
-    final_preds = np.asarray(final_preds).reshape(-1)
+    # ----------------- ENSEMBLE -----------------
+    # all_seed_preds: shape (num_seeds, num_samples)
+    all_seed_preds = np.array(all_seed_preds)  # (num_seeds, N)
+
+    # Majority vote
+    final_preds = []
+    for i in range(all_seed_preds.shape[1]):
+        values, counts = np.unique(all_seed_preds[:, i], return_counts=True)
+        final_preds.append(values[np.argmax(counts)])
+    final_preds = np.array(final_preds)
+
+    # Map to labels
     id_to_label = {0: "A", 1: "B", 2: "C", 3: "D"}
     final_labels = [id_to_label[int(p)] for p in final_preds]
 
-    # Save
+    # Save submission
     submission = [{"question_id": qid, "answer": label}
                   for qid, label in zip([item["question_id"] for item in test_ds.items], final_labels)]
 
@@ -173,7 +183,6 @@ def main():
     df.to_csv(OUTPUT_FILE, index=False)
 
     print(f"\nSaved submission to {OUTPUT_FILE}")
-
 
 if __name__ == "__main__":
     main()
