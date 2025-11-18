@@ -1,4 +1,5 @@
 # src/train.py
+
 import os, random, torch, numpy as np
 from torch.utils.data import DataLoader, Subset
 from transformers import AutoTokenizer
@@ -12,6 +13,7 @@ from sklearn.model_selection import train_test_split
 APPEARANCE_DIR = "/kaggle/working/features_v2/appearance"
 MOTION_DIR = "/kaggle/working/features_v2/motion"
 MODEL_TEXT = "vinai/phobert-base-v2"
+
 BATCH_SIZE = 16
 MAX_LEN = 64
 LR = 2e-5
@@ -22,12 +24,11 @@ VALID_SPLIT = 0.1
 SEED = 42
 USE_FP16 = True
 ACCUM_STEPS = 2
-UNFREEZE_LAST_N = 3
-EARLYSTOP_PATIENCE = 5  # dừng sớm khi val không cải thiện
+EARLYSTOP_PATIENCE = 5
 CLIP_NORM = 1.0
 NUM_WORKERS = 4
 
-# ----------------------------
+
 def seed_everything(seed=SEED):
     random.seed(seed)
     np.random.seed(seed)
@@ -35,23 +36,20 @@ def seed_everything(seed=SEED):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-def unfreeze_last_n(text_encoder, n=3):
-    for param in text_encoder.parameters():
-        param.requires_grad = False
-    if hasattr(text_encoder, "encoder"):
-        for layer in text_encoder.encoder.layer[-n:]:
-            for p in layer.parameters():
-                p.requires_grad = True
-    if hasattr(text_encoder, "pooler"):
-        for p in text_encoder.pooler.parameters():
-            p.requires_grad = True
 
 # ---------- Training ----------
 def train():
     seed_everything()
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_TEXT, trust_remote_code=True)
-    full_ds = FeatureVideoQADataset("/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/train/train.json", APPEARANCE_DIR, MOTION_DIR, tokenizer_name=MODEL_TEXT, max_len=MAX_LEN)
+
+    full_ds = FeatureVideoQADataset(
+        "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/train/train.json",
+        APPEARANCE_DIR,
+        MOTION_DIR,
+        tokenizer_name=MODEL_TEXT,
+        max_len=MAX_LEN,
+    )
 
     train_idx, val_idx = train_test_split(range(len(full_ds)), test_size=VALID_SPLIT, random_state=SEED)
     train_ds = Subset(full_ds, train_idx)
@@ -64,35 +62,21 @@ def train():
     ngpu = torch.cuda.device_count()
     print(f"Device: {device}, GPUs: {ngpu}")
 
-    model = CrossModalQA(text_model_name=MODEL_TEXT).to(device)
-    unfreeze_last_n(model.text_encoder, UNFREEZE_LAST_N)
-    print(f"Unfroze last {UNFREEZE_LAST_N} layers of text encoder.")
+    # FIXED: đúng tên tham số
+    model = CrossModalQA(text_encoder_name=MODEL_TEXT).to(device)
 
     if ngpu > 1:
         model = torch.nn.DataParallel(model)
 
-    # Optimizer + scheduler
     model_for_params = model.module if hasattr(model, "module") else model
-    no_decay = ["bias", "LayerNorm.weight"]
-    optimizer_grouped_parameters = [
-        {
-            "params": [p for n, p in model_for_params.text_encoder.named_parameters() if not any(nd in n for nd in no_decay)],
-            "weight_decay": WEIGHT_DECAY,
-            "lr": LR,
-        },
-        {
-            "params": [p for n, p in model_for_params.text_encoder.named_parameters() if any(nd in n for nd in no_decay)],
-            "weight_decay": 0.0,
-            "lr": LR,
-        },
-        {
-            "params": [p for n, p in model_for_params.named_parameters() if not n.startswith("text_encoder")],
-            "weight_decay": WEIGHT_DECAY,
-            "lr": LR * 5,
-        },
-    ]
-    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=LR)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=1, verbose=True)
+
+    # Optimizer
+    optimizer = torch.optim.AdamW(model_for_params.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', factor=0.5, patience=1, verbose=True
+    )
+
     scaler = GradScaler(enabled=USE_FP16)
 
     best_val = 0.0
@@ -108,18 +92,23 @@ def train():
         for step, batch in enumerate(pbar):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            appearance = batch["appearance_feats"].to(device)
-            motion = batch["motion_feats"].to(device)
+
+            # FIXED: gộp appearance + motion
+            video_feats = torch.cat([
+                batch["appearance_feats"],
+                batch["motion_feats"]
+            ], dim=1).to(device)
+
             labels = batch["labels"].to(device)
 
             with autocast(enabled=USE_FP16):
-                logits = model(input_ids, attention_mask, appearance, motion)
+                logits = model(video_feats, input_ids, attention_mask)
                 loss = torch.nn.functional.cross_entropy(logits, labels)
                 loss = loss / ACCUM_STEPS
 
             scaler.scale(loss).backward()
 
-            if (step + 1) % ACCUM_STEPS == 0 or (step + 1) == len(train_loader):
+            if (step + 1) % ACCUM_STEPS == 0:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), CLIP_NORM)
                 scaler.step(optimizer)
@@ -131,14 +120,21 @@ def train():
 
         val_acc = evaluate(model, val_loader, device)
         print(f"Epoch {epoch+1} val_acc: {val_acc:.4f}")
+
         scheduler.step(val_acc)
 
+        # Save best
         if val_acc > best_val:
             best_val = val_acc
             epochs_no_improve = 0
             save_path = os.path.join(OUTPUT_DIR, "best.pt")
             to_save = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
-            torch.save({"model": to_save, "optimizer": optimizer.state_dict(), "epoch": epoch, "val_acc": val_acc}, save_path)
+            torch.save({
+                "model": to_save,
+                "optimizer": optimizer.state_dict(),
+                "epoch": epoch,
+                "val_acc": val_acc
+            }, save_path)
             print("✅ Saved best checkpoint.")
         else:
             epochs_no_improve += 1
@@ -149,25 +145,35 @@ def train():
 
     print("Training done. Best val:", best_val)
 
+
 def evaluate(model, loader, device):
     model.eval()
     total, correct = 0, 0
+
     with torch.no_grad():
         for batch in tqdm(loader, desc="Eval"):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            appearance = batch["appearance_feats"].to(device)
-            motion = batch["motion_feats"].to(device)
+
+            video_feats = torch.cat([
+                batch["appearance_feats"],
+                batch["motion_feats"]
+            ], dim=1).to(device)
+
             labels = batch["labels"].to(device)
 
-            logits = model(input_ids, attention_mask, appearance, motion)
+            logits = model(video_feats, input_ids, attention_mask)
             preds = logits.argmax(dim=1)
+
             mask = labels >= 0
-            if mask.sum().item() == 0:
+            if mask.sum() == 0:
                 continue
+
             correct += (preds[mask] == labels[mask]).sum().item()
             total += mask.sum().item()
+
     return correct / total if total > 0 else 0.0
+
 
 if __name__ == "__main__":
     train()
