@@ -1,13 +1,12 @@
-# src/train.py
-
 import os, random, torch, numpy as np
 from torch.utils.data import DataLoader, Subset
 from transformers import AutoTokenizer
 from datasets import FeatureVideoQADataset, collate_fn
 from model import CrossModalQA
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
+import torch.nn.functional as F
 
 # ---------- Config ----------
 APPEARANCE_DIR = "/kaggle/working/features_v2/appearance"
@@ -41,7 +40,8 @@ def seed_everything(seed=SEED):
 def train():
     seed_everything()
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_TEXT, trust_remote_code=True)
+    # set clean_up_tokenization_spaces to remove the FutureWarning
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_TEXT, trust_remote_code=True, clean_up_tokenization_spaces=True)
 
     full_ds = FeatureVideoQADataset(
         "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/train/train.json",
@@ -62,7 +62,6 @@ def train():
     ngpu = torch.cuda.device_count()
     print(f"Device: {device}, GPUs: {ngpu}")
 
-    # FIXED: đúng tên tham số
     model = CrossModalQA(text_encoder_name=MODEL_TEXT).to(device)
 
     if ngpu > 1:
@@ -70,14 +69,13 @@ def train():
 
     model_for_params = model.module if hasattr(model, "module") else model
 
-    # Optimizer
     optimizer = torch.optim.AdamW(model_for_params.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='max', factor=0.5, patience=1, verbose=True
     )
 
-    scaler = GradScaler(enabled=USE_FP16)
+    scaler = GradScaler()  # device set automatically; use default
 
     best_val = 0.0
     epochs_no_improve = 0
@@ -90,25 +88,36 @@ def train():
         optimizer.zero_grad()
 
         for step, batch in enumerate(pbar):
+            # batch contains: input_ids (B, C, L), attention_mask (B, C, L), appearance_feats (B, T, 768), motion_feats (B, T, 768), labels (B)
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-
-            # FIXED: gộp appearance + motion
-            video_feats = torch.cat([
-                batch["appearance_feats"],
-                batch["motion_feats"]
-            ], dim=1).to(device)
-
+            appearance = batch["appearance_feats"].to(device)
+            motion = batch["motion_feats"].to(device)
             labels = batch["labels"].to(device)
 
+            # build video_feats as (B, T, 768) by concatenating along feature dim if needed
+            # if your dataset stores appearance and motion as separate temporal streams, you may instead fuse them.
+            # here we concatenate the feature-dim (last dim) if they have same time length, else we mean-pool then concat.
+            if appearance.dim() == 3 and motion.dim() == 3 and appearance.size(1) == motion.size(1):
+                # simple average fusion across streams
+                video_feats = (appearance + motion) / 2.0  # (B, T, 768)
+            else:
+                # fallback: mean pool temporally then concatenate
+                a_pool = appearance.mean(dim=1)
+                m_pool = motion.mean(dim=1)
+                # create a single time step
+                video_feats = torch.stack([a_pool, m_pool], dim=1)  # (B, 2, 768)
+
+            # Flatten text inputs for encoder if needed inside model as well; model can handle both, but to be explicit we keep (B, C, L)
+
             with autocast(enabled=USE_FP16):
-                logits = model(video_feats, input_ids, attention_mask)
-                loss = torch.nn.functional.cross_entropy(logits, labels)
+                logits = model(video_feats, input_ids, attention_mask)  # (B, C)
+                loss = F.cross_entropy(logits, labels)
                 loss = loss / ACCUM_STEPS
 
             scaler.scale(loss).backward()
 
-            if (step + 1) % ACCUM_STEPS == 0:
+            if (step + 1) % ACCUM_STEPS == 0 or (step + 1) == len(train_loader):
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), CLIP_NORM)
                 scaler.step(optimizer)
@@ -123,7 +132,6 @@ def train():
 
         scheduler.step(val_acc)
 
-        # Save best
         if val_acc > best_val:
             best_val = val_acc
             epochs_no_improve = 0
@@ -154,13 +162,16 @@ def evaluate(model, loader, device):
         for batch in tqdm(loader, desc="Eval"):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-
-            video_feats = torch.cat([
-                batch["appearance_feats"],
-                batch["motion_feats"]
-            ], dim=1).to(device)
-
+            appearance = batch["appearance_feats"].to(device)
+            motion = batch["motion_feats"].to(device)
             labels = batch["labels"].to(device)
+
+            if appearance.dim() == 3 and motion.dim() == 3 and appearance.size(1) == motion.size(1):
+                video_feats = (appearance + motion) / 2.0
+            else:
+                a_pool = appearance.mean(dim=1)
+                m_pool = motion.mean(dim=1)
+                video_feats = torch.stack([a_pool, m_pool], dim=1)
 
             logits = model(video_feats, input_ids, attention_mask)
             preds = logits.argmax(dim=1)
