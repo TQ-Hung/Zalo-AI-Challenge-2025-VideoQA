@@ -1,3 +1,4 @@
+# FILE: src/train.py
 import os, random, torch, numpy as np
 from torch.utils.data import DataLoader, Subset
 from transformers import AutoTokenizer
@@ -110,7 +111,7 @@ def train():
 
             # Flatten text inputs for encoder if needed inside model as well; model can handle both, but to be explicit we keep (B, C, L)
 
-            with autocast(enabled=USE_FP16):
+            with autocast(device_type='cuda', enabled=USE_FP16):
                 logits = model(video_feats, input_ids, attention_mask)  # (B, C)
                 loss = F.cross_entropy(logits, labels)
                 loss = loss / ACCUM_STEPS

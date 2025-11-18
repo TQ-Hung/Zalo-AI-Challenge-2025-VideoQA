@@ -121,4 +121,3 @@ class CrossModalQA(nn.Module):
         return logits
 
 
-# FILE: src/train.py
