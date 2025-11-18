@@ -1,120 +1,181 @@
 import os
 import json
 import torch
-import numpy as np
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoTokenizer
-from torch.utils.data import Dataset, DataLoader
-from model import CrossModalQA
 
-# ------------------- CONFIG -------------------
-MODEL_TEXT = "vinai/phobert-base-v2"
-CHECKPOINT = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/checkpoints/best.pt"
-TEST_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/public_test/public_test.json"
-FEATURE_DIR = "/kaggle/working/features_test"
-APP_DIR = f"{FEATURE_DIR}/appearance"
-MOT_DIR = f"{FEATURE_DIR}/motion"
-OCR_TEXT_DIR = f"{FEATURE_DIR}/ocr"
+from src.datasets import ZaloDataset
+from src.model import VideoQAModel
 
-BATCH_SIZE = 32
-TTA_TIMES = 3
-OUTPUT_FILE = "/kaggle/working/submission.csv"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# ------------------- DATASET -------------------
-class PublicTestDataset(Dataset):
-    def __init__(self):
-        with open(TEST_JSON, "r", encoding="utf-8") as f:
-            data = json.load(f)["data"]
-        self.items = []
-        for item in data:
-            video_id = os.path.splitext(os.path.basename(item["video_path"]))[0]
-            app_path = os.path.join(APP_DIR, f"{video_id}.npy")
-            mot_path = os.path.join(MOT_DIR, f"{video_id}.npy")
-            if not (os.path.exists(app_path) and os.path.exists(mot_path)):
-                continue
-            ocr_text_path = os.path.join(OCR_TEXT_DIR, f"{video_id}.txt")
-            self.items.append({
-                "question_id": item["id"],
-                "question": item["question"],
-                "video_id": video_id,
-                "app_path": app_path,
-                "mot_path": mot_path,
-                "ocr_text_path": ocr_text_path if os.path.exists(ocr_text_path) else None
-            })
-        print(f"LOADED {len(self.items)} TEST SAMPLES")
+# ============================================================
+#                 INFERENCE (FULL FIXED VERSION)
+# ============================================================
+def inference(
+    model_path: str,
+    data_path: str,
+    feature_dir: str,
+    output_path: str,
+    model_name: str = "vinai/phobert-base-v2",
+    batch_size: int = 8,
+    max_length: int = 128,
+    device: str = None,
+):
+    """
+    - model_path: checkpoint .pt
+    - data_path: test json file
+    - feature_dir: extracted video features
+    - output_path: output submission.jsonl
+    """
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device:", device)
 
-    def __len__(self):
-        return len(self.items)
+    # ------------------------
+    # Load tokenizer & dataset
+    # ------------------------
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    def __getitem__(self, idx):
-        item = self.items[idx]
-        appearance = np.load(item["app_path"]).astype(np.float32)
-        motion = np.load(item["mot_path"]).astype(np.float32)
-        ocr_text = ""
-        if item["ocr_text_path"]:
-            with open(item["ocr_text_path"], "r", encoding="utf-8") as f:
-                ocr_text = f.read().strip()
-        question = f"[OCR: {ocr_text}] {item['question']}" if ocr_text else item['question']
-        return {
-            "question_id": item["question_id"],
-            "question": question,
-            "appearance": torch.from_numpy(appearance),
-            "motion": torch.from_numpy(motion),
-        }
+    test_ds = ZaloDataset(
+        data_path,
+        tokenizer,
+        feature_dir,
+        split="test",
+        max_length=max_length,
+    )
 
-def collate_fn(batch):
-    return {
-        "qids": [b["question_id"] for b in batch],
-        "questions": [b["question"] for b in batch],
-        "appearance": torch.stack([b["appearance"] for b in batch]),
-        "motion": torch.stack([b["motion"] for b in batch]),
-    }
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=2,
+        collate_fn=test_ds.collate_fn,
+    )
 
-# ------------------- MAIN -------------------
-def main():
-    print(f"Using device: {DEVICE}")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_TEXT, trust_remote_code=True)
-    test_ds = PublicTestDataset()
-    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
+    # ------------------------
+    # Load model
+    # ------------------------
+    print(f"Loading model from {model_path} ...")
 
-    model = CrossModalQA(text_model_name=MODEL_TEXT).to(DEVICE)
-    ckpt = torch.load(CHECKPOINT, map_location=DEVICE)
-    model.load_state_dict(ckpt["model"])
+    checkpoint = torch.load(model_path, map_location=device)
+    model = VideoQAModel()
+    model.load_state_dict(checkpoint, strict=True)
+    model.to(device)
     model.eval()
 
     all_preds = []
+
+    # Flags to print debug only once
+    shape_reported = False
+    sample_reported = False
+
+    # ------------------------
+    # Inference loop
+    # ------------------------
     with torch.no_grad():
-        for batch in tqdm(test_loader):
-            encoded = tokenizer(batch["questions"], padding=True, truncation=True, max_length=64, return_tensors="pt")
-            input_ids = encoded["input_ids"].to(DEVICE)
-            attention_mask = encoded["attention_mask"].to(DEVICE)
-            appearance = batch["appearance"].to(DEVICE)
-            motion = batch["motion"].to(DEVICE)
+        for batch in tqdm(test_loader, desc="Inferencing"):
+            # Move batch to device
+            for k in batch:
+                if isinstance(batch[k], torch.Tensor):
+                    batch[k] = batch[k].to(device)
 
-            tta_logits = []
-            for _ in range(TTA_TIMES):
-                noise = 0.02 if _ > 0 else 0.0
-                app = appearance + torch.randn_like(appearance) * noise
-                mot = motion + torch.randn_like(motion) * noise
-                logits = model(input_ids, attention_mask, app, mot)
-                # logits: (B, C, num_classes)
-                logits = logits.squeeze(-1) if logits.size(-1) == 1 else logits
-                tta_logits.append(logits)
+            # Forward pass
+            logits = model(
+                batch["input_ids"],
+                batch["attention_mask"],
+                batch["appearance_feats"],
+                batch["motion_feats"],
+            )
 
-            avg_logits = torch.stack(tta_logits).mean(0)
-            pred = avg_logits.argmax(dim=1).cpu().numpy()
-            all_preds.extend(pred.tolist())
+            # -----------------------------
+            # DEBUG SHAPES (once)
+            # -----------------------------
+            if not shape_reported:
+                print("DEBUG >>> logits.shape:", logits.shape)
+                print("DEBUG >>> logits.dtype:", logits.dtype)
+                shape_reported = True
 
+            # -----------------------------
+            # FIX CHOICE SCORING
+            # logits expected shapes:
+            #   (B, C, num_classes) OR (B, C) OR (B, C, 1)
+            # -----------------------------
+            if logits.dim() == 3:
+                # Example: (B, C, num_classes)
+                # Take max across class dimension → 1 score/choice
+                choice_scores = logits.max(dim=2).values  # (B, C)
+
+            elif logits.dim() == 2:
+                # Already (B, C)
+                choice_scores = logits
+
+            elif logits.dim() == 4 and logits.size(-1) == 1:
+                # Shape (B, C, 1) → squeeze
+                choice_scores = logits.squeeze(-1)
+
+            else:
+                # Fallback: flatten last dims
+                B = logits.size(0)
+                C = logits.size(1)
+                choice_scores = logits.view(B, C, -1).mean(dim=2)
+
+            # -----------------------------
+            # DEBUG SAMPLE (once)
+            # -----------------------------
+            if not sample_reported:
+                print("DEBUG >>> sample choice_scores[0]:", choice_scores[0].cpu().numpy())
+                sample_reported = True
+
+            # -----------------------------
+            # Final predicted choice index
+            # -----------------------------
+            preds_batch = choice_scores.argmax(dim=1).cpu().tolist()
+            all_preds.extend(preds_batch)
+
+    # -----------------------------
+    # Convert to labels A/B/C/D
+    # -----------------------------
     id_to_label = {0: "A", 1: "B", 2: "C", 3: "D"}
-    final_labels = [id_to_label[p] for p in all_preds]
+    final_labels = [id_to_label[int(x)] for x in all_preds]
 
-    import pandas as pd
-    df = pd.DataFrame([{"question_id": qid, "answer": label} 
-                       for qid, label in zip([item["question_id"] for item in test_ds.items], final_labels)])
-    df.to_csv(OUTPUT_FILE, index=False)
-    print(f"SUBMISSION READY: {OUTPUT_FILE}")
-    print(f"Distribution: A:{final_labels.count('A')}, B:{final_labels.count('B')}, C:{final_labels.count('C')}, D:{final_labels.count('D')}")
+    # -----------------------------
+    # Save output
+    # -----------------------------
+    print("Saving output to:", output_path)
+
+    with open(data_path, "r", encoding="utf-8") as f:
+        raw = [json.loads(x) for x in f]
+
+    assert len(raw) == len(final_labels)
+
+    with open(output_path, "w", encoding="utf-8") as g:
+        for item, label in zip(raw, final_labels):
+            out = {"id": item["id"], "answer": label}
+            g.write(json.dumps(out, ensure_ascii=False) + "\n")
+
+    print("DONE.")
+
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument("--data_path", type=str, required=True)
+    parser.add_argument("--feature_dir", type=str, required=True)
+    parser.add_argument("--output_path", type=str, required=True)
+    parser.add_argument("--model_name", type=str, default="vinai/phobert-base-v2")
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--max_length", type=int, default=128)
+
+    args = parser.parse_args()
+
+    inference(
+        model_path=args.model_path,
+        data_path=args.data_path,
+        feature_dir=args.feature_dir,
+        output_path=args.output_path,
+        model_name=args.model_name,
+        batch_size=args.batch_size,
+        max_length=args.max_length,
+    )
