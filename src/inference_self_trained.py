@@ -2,6 +2,7 @@
 import os
 import json
 import torch
+import numpy as np
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
@@ -11,21 +12,49 @@ from model import EarlyFusionQA
 def inference_self_trained(model_path, output_file):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
+    # Auto-detect feature dimension
+    feature_dim = 768  # default
+    try:
+        appearance_dir = "/kaggle/working/features_test/appearance"
+        sample_files = [f for f in os.listdir(appearance_dir) if f.endswith('.npy')]
+        if sample_files:
+            sample_path = os.path.join(appearance_dir, sample_files[0])
+            sample_feat = np.load(sample_path)
+            feature_dim = sample_feat.shape[-1]
+            print(f"🔍 Detected feature dimension: {feature_dim}")
+    except Exception as e:
+        print(f"⚠️ Could not detect feature dimension, using default: {feature_dim}")
+    
     # Load model
     print(f"🤖 Loading self-trained model from {model_path} ...")
-    model = EarlyFusionQA(text_model_name="vinai/phobert-base", video_dim=768).to(device)  # ADDED: video_dim=768
+    model = EarlyFusionQA(text_model_name="vinai/phobert-base", video_dim=feature_dim).to(device)
     ckpt = torch.load(model_path, map_location=device)
     
+    # Handle dimension mismatch
+    state_dict = ckpt["model"]
+    
+    # Check if there's dimension mismatch
+    if "video_proj.weight" in state_dict:
+        expected_shape = state_dict["video_proj.weight"].shape
+        current_shape = model.video_proj.weight.shape
+        if expected_shape != current_shape:
+            print(f"🔄 Adjusting video_proj layer: {expected_shape} -> {current_shape}")
+            # Remove mismatched layers
+            keys_to_remove = [k for k in state_dict.keys() if k.startswith(('video_proj', 'temporal_agg'))]
+            for k in keys_to_remove:
+                state_dict.pop(k)
+            print(f"✅ Removed mismatched layers: {keys_to_remove}")
+    
     # Handle DataParallel
-    if "module" in list(ckpt["model"].keys())[0]:
+    if "module" in list(state_dict.keys())[0]:
         from collections import OrderedDict
         new_state_dict = OrderedDict()
-        for k, v in ckpt["model"].items():
+        for k, v in state_dict.items():
             name = k[7:] if k.startswith('module.') else k
             new_state_dict[name] = v
-        model.load_state_dict(new_state_dict)
+        model.load_state_dict(new_state_dict, strict=False)
     else:
-        model.load_state_dict(ckpt["model"])
+        model.load_state_dict(state_dict, strict=False)
     
     model.eval()
     

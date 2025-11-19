@@ -1,4 +1,4 @@
-# src/pseudo_labeling.py
+# /kaggle/working/Zalo-AI-Challenge-2025-VideoQA/src/pseudo_labeling.py
 import os
 import json
 import torch
@@ -13,20 +13,47 @@ def generate_pseudo_labels(model_checkpoint, test_json, appearance_dir, motion_d
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"🚀 Starting pseudo-label generation with confidence threshold: {confidence_threshold}")
     
-    # Load model
-    model = EarlyFusionQA(text_model_name="vinai/phobert-base").to(device)
+    # Auto-detect feature dimension by checking first feature file
+    feature_dim = 768  # default
+    try:
+        sample_files = [f for f in os.listdir(appearance_dir) if f.endswith('.npy')]
+        if sample_files:
+            sample_path = os.path.join(appearance_dir, sample_files[0])
+            sample_feat = np.load(sample_path)
+            feature_dim = sample_feat.shape[-1]
+            print(f"🔍 Detected feature dimension: {feature_dim}")
+    except Exception as e:
+        print(f"⚠️ Could not detect feature dimension, using default: {feature_dim}")
+    
+    # Load model with correct dimension
+    model = EarlyFusionQA(text_model_name="vinai/phobert-base", video_dim=feature_dim).to(device)
     ckpt = torch.load(model_checkpoint, map_location=device)
     
+    # Handle dimension mismatch in state_dict
+    state_dict = ckpt["model"]
+    
+    # Check if there's dimension mismatch
+    if "video_proj.weight" in state_dict:
+        expected_shape = state_dict["video_proj.weight"].shape
+        current_shape = model.video_proj.weight.shape
+        if expected_shape != current_shape:
+            print(f"🔄 Adjusting video_proj layer: {expected_shape} -> {current_shape}")
+            # Remove mismatched layers, they will be randomly initialized
+            keys_to_remove = [k for k in state_dict.keys() if k.startswith(('video_proj', 'temporal_agg'))]
+            for k in keys_to_remove:
+                state_dict.pop(k)
+            print(f"✅ Removed mismatched layers: {keys_to_remove}")
+    
     # Handle DataParallel wrapping
-    if "module" in list(ckpt["model"].keys())[0]:
+    if "module" in list(state_dict.keys())[0]:
         from collections import OrderedDict
         new_state_dict = OrderedDict()
-        for k, v in ckpt["model"].items():
+        for k, v in state_dict.items():
             name = k[7:] if k.startswith('module.') else k
             new_state_dict[name] = v
-        model.load_state_dict(new_state_dict)
+        model.load_state_dict(new_state_dict, strict=False)
     else:
-        model.load_state_dict(ckpt["model"])
+        model.load_state_dict(state_dict, strict=False)
     
     model.eval()
     
@@ -80,8 +107,8 @@ def generate_pseudo_labels(model_checkpoint, test_json, appearance_dir, motion_d
                         "video_path": original_item["video_path"],
                         "question": original_item["question"],
                         "choices": original_item["choices"],
-                        "answer": answer_text,  # Store the actual text answer
-                        "answer_index": int(pred),  # Store the index
+                        "answer": answer_text,
+                        "answer_index": int(pred),
                         "confidence": float(prob)
                     })
     
@@ -91,7 +118,8 @@ def generate_pseudo_labels(model_checkpoint, test_json, appearance_dir, motion_d
         "info": {
             "generated_by": "pseudo_labeling",
             "confidence_threshold": confidence_threshold,
-            "total_samples": len(pseudo_labels)
+            "total_samples": len(pseudo_labels),
+            "feature_dim": feature_dim
         }
     }
     
@@ -103,12 +131,16 @@ def generate_pseudo_labels(model_checkpoint, test_json, appearance_dir, motion_d
     return pseudo_labels
 
 if __name__ == "__main__":
-    # Configuration
+    # Configuration - UPDATE PATHS FOR KAGGLE
     MODEL_CHECKPOINT = "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/checkpoints/best.pt"
     TEST_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/public_test/public_test.json"
-    APPEARANCE_DIR = "features_test/appearance"
-    MOTION_DIR = "features_test/motion"
+    APPEARANCE_DIR = "/kaggle/working/features_test/appearance"
+    MOTION_DIR = "/kaggle/working/features_test/motion"
     OUTPUT_FILE = "/kaggle/working/pseudo_labels.json"
+    
+    # Create directories if not exist
+    os.makedirs("/kaggle/working/features_test/appearance", exist_ok=True)
+    os.makedirs("/kaggle/working/features_test/motion", exist_ok=True)
     
     generate_pseudo_labels(
         model_checkpoint=MODEL_CHECKPOINT,
