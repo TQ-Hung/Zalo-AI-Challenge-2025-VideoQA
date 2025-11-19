@@ -13,8 +13,8 @@ from tqdm import tqdm
 from constants import DATA_JSON
 
 # ---------- Config ----------
-APPEARANCE_DIR = "features/appearance"
-MOTION_DIR = "features/motion"
+APPEARANCE_DIR = "features_v2/appearance"
+MOTION_DIR = "features_v2/motion"
 # train.py
 MODEL_TEXT = "vinai/phobert-base"
 BATCH_SIZE = 8
