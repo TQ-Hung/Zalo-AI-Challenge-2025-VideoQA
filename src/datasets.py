@@ -10,9 +10,21 @@ def pad_sequence_feats(feat_list):
     """
     feat_list: list of tensors có shape (T_i, D)
     Mục tiêu: pad tất cả lên T_max theo batch để có (B, T_max, D)
+    Đồng thời đảm bảo tất cả features có cùng dimension D = 768.
     """
+    # Kiểm tra dimension của các features, nếu có feature nào không phải 768 thì chuyển về 768
+    for i, f in enumerate(feat_list):
+        if f.shape[1] != 768:
+            # Nếu dimension lớn hơn 768, cắt bớt
+            if f.shape[1] > 768:
+                feat_list[i] = f[:, :768]
+            # Nếu dimension nhỏ hơn 768, pad thêm bằng 0
+            else:
+                pad_size = 768 - f.shape[1]
+                feat_list[i] = torch.nn.functional.pad(f, (0, pad_size), "constant", 0)
+
     max_len = max(f.shape[0] for f in feat_list)
-    feat_dim = feat_list[0].shape[1]
+    feat_dim = 768  # Giờ đây tất cả đều là 768
     batch_size = len(feat_list)
 
     padded = torch.zeros((batch_size, max_len, feat_dim), dtype=torch.float32)
