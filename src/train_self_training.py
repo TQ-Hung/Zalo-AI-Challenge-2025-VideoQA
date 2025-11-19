@@ -1,16 +1,118 @@
-# src/train_self_training.py
+# /kaggle/working/Zalo-AI-Challenge-2025-VideoQA/src/train_self_training.py
 import os
 import math
 import torch
 import random
 import numpy as np
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset
 from transformers import AutoTokenizer
-from combined_dataset import CombinedQADataset
 from datasets import collate_fn
 from model import EarlyFusionQA
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
+import json
+
+# ---------- Combined Dataset Class ----------
+class CombinedQADataset(Dataset):
+    def __init__(self, original_json, pseudo_labels_json, appearance_dir, motion_dir, 
+                 tokenizer_name="vinai/phobert-base", max_len=64):
+        super().__init__()
+        
+        # Load original training data
+        with open(original_json, 'r', encoding='utf-8') as f:
+            original_data = json.load(f)
+            if "data" in original_data:
+                original_items = original_data["data"]
+            else:
+                original_items = original_data
+        
+        # Load pseudo-labels
+        with open(pseudo_labels_json, 'r', encoding='utf-8') as f:
+            pseudo_data = json.load(f)
+            if "data" in pseudo_data:
+                pseudo_items = pseudo_data["data"]
+            else:
+                pseudo_items = pseudo_data
+        
+        # Combine datasets - mark pseudo-labeled data
+        self.items = []
+        for item in original_items:
+            item["is_pseudo"] = False
+            self.items.append(item)
+            
+        for item in pseudo_items:
+            item["is_pseudo"] = True
+            # Convert answer_index to answer for compatibility
+            if "answer_index" in item and "answer" not in item:
+                item["answer"] = item["choices"][item["answer_index"]]
+            self.items.append(item)
+        
+        self.appearance_dir = appearance_dir
+        self.motion_dir = motion_dir
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        self.max_len = max_len
+        
+        print(f"✅ Combined dataset: {len(original_items)} original + {len(pseudo_items)} pseudo-labels = {len(self.items)} total")
+
+    def __len__(self):
+        return len(self.items)
+
+    def _load_npy_safe(self, path):
+        if not os.path.exists(path):
+            return None
+        try:
+            arr = np.load(path)
+            return arr if arr is not None and arr.size > 0 else None
+        except Exception as e:
+            print(f"Warning: Could not load {path}, error: {e}")
+            return None
+
+    def __getitem__(self, idx):
+        it = self.items[idx]
+        vid_basename = os.path.splitext(os.path.basename(it["video_path"]))[0]
+        
+        app_path = os.path.join(self.appearance_dir, f"{vid_basename}.npy")
+        mot_path = os.path.join(self.motion_dir, f"{vid_basename}.npy")
+
+        app_arr = self._load_npy_safe(app_path)
+        mot_arr = self._load_npy_safe(mot_path)
+
+        if app_arr is None:
+            app_arr = np.zeros((1, 2048), dtype=np.float32)
+        if mot_arr is None:
+            mot_arr = np.zeros((1, 2048), dtype=np.float32)
+
+        app_feat = torch.tensor(app_arr, dtype=torch.float32)
+        mot_feat = torch.tensor(mot_arr, dtype=torch.float32)   
+
+        question = it["question"]
+        choices = it["choices"]
+        texts = [question + " " + c for c in choices]
+        enc = self.tokenizer(texts, padding="max_length", truncation=True,
+                            max_length=self.max_len, return_tensors="pt")
+
+        label = -1
+        ans = it.get("answer", None)
+        if ans is not None:
+            for i, c in enumerate(choices):
+                if str(ans).strip() == str(c).strip():
+                    label = i
+                    break
+            # If still not found and we have answer_index, use that
+            if label == -1 and "answer_index" in it:
+                label = it["answer_index"]
+
+        return {
+            "video_id": it.get("id", vid_basename),
+            "appearance": app_feat,
+            "motion": mot_feat,
+            "input_ids": enc["input_ids"],
+            "attention_mask": enc["attention_mask"],
+            "label": label,
+            "choices": choices,
+            "is_pseudo": it.get("is_pseudo", False),
+            "confidence": it.get("confidence", 1.0)
+        }
 
 # ---------- Config ----------
 MODEL_TEXT = "vinai/phobert-base"
@@ -19,7 +121,7 @@ MAX_LEN = 64
 LR = 2e-5
 EPOCHS = 20
 WEIGHT_DECAY = 0.01
-OUTPUT_DIR = "checkpoints_self_training"
+OUTPUT_DIR = "/kaggle/working/checkpoints_self_training"
 VALID_SPLIT = 0.1
 SEED = 42
 
@@ -33,10 +135,9 @@ NUM_WORKERS = 4
 # Self-training specific config
 PSEUDO_LABELS_JSON = "/kaggle/working/pseudo_labels.json"
 ORIGINAL_TRAIN_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/train/train.json"
-APPEARANCE_DIR = "features_v2/appearance"
-MOTION_DIR = "features_v2/motion"
-PSEUDO_WEIGHT = 0.5  # Weight for pseudo-labeled samples in loss
-# ----------------------------
+APPEARANCE_DIR = "/kaggle/working/features_v2/appearance"
+MOTION_DIR = "/kaggle/working/features_v2/motion"
+PSEUDO_WEIGHT = 0.5
 
 def seed_everything(seed=SEED):
     random.seed(seed)
@@ -61,9 +162,6 @@ def unfreeze_last_n(text_encoder, n=3):
             p.requires_grad = True
 
 def weighted_loss(logits, labels, is_pseudo, pseudo_weight=0.5):
-    """
-    Custom loss function that weights pseudo-labeled samples differently
-    """
     base_loss = torch.nn.functional.cross_entropy(logits, labels, reduction='none')
     
     # Apply weights: pseudo-labeled samples get lower weight
@@ -73,6 +171,31 @@ def weighted_loss(logits, labels, is_pseudo, pseudo_weight=0.5):
         weights[mask] = pseudo_weight
     
     return (base_loss * weights).mean()
+
+def evaluate_self_training(model, loader, device):
+    model.eval()
+    total = 0
+    correct = 0
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="Evaluating"):
+            if batch is None:
+                continue
+                
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            appearance = batch["appearance_feats"].to(device)
+            motion = batch["motion_feats"].to(device)
+            labels = batch["labels"].to(device)
+            
+            logits = model(input_ids, attention_mask, appearance, motion)
+            preds = logits.argmax(dim=1)
+            mask = labels >= 0
+            if mask.sum().item() == 0:
+                continue
+            correct += (preds[mask] == labels[mask]).sum().item()
+            total += mask.sum().item()
+    
+    return correct / total if total > 0 else 0.0
 
 def train_with_pseudo_labels():
     seed_everything()
@@ -95,7 +218,6 @@ def train_with_pseudo_labels():
     val_idx = indices[:n_val]
     train_idx = indices[n_val:]
     
-    from torch.utils.data import Subset
     train_ds = Subset(combined_ds, train_idx)
     val_ds = Subset(combined_ds, val_idx)
     
@@ -235,31 +357,6 @@ def train_with_pseudo_labels():
                 break
     
     print(f"🎉 Self-training done. Best val: {best_val:.4f}")
-
-def evaluate_self_training(model, loader, device):
-    model.eval()
-    total = 0
-    correct = 0
-    with torch.no_grad():
-        for batch in tqdm(loader, desc="Evaluating"):
-            if batch is None:
-                continue
-                
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            appearance = batch["appearance_feats"].to(device)
-            motion = batch["motion_feats"].to(device)
-            labels = batch["labels"].to(device)
-            
-            logits = model(input_ids, attention_mask, appearance, motion)
-            preds = logits.argmax(dim=1)
-            mask = labels >= 0
-            if mask.sum().item() == 0:
-                continue
-            correct += (preds[mask] == labels[mask]).sum().item()
-            total += mask.sum().item()
-    
-    return correct / total if total > 0 else 0.0
 
 if __name__ == "__main__":
     train_with_pseudo_labels()
