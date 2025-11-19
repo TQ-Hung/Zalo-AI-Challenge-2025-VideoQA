@@ -77,12 +77,29 @@ class FeatureVideoQADataset(Dataset):
         mot_arr = self._load_npy_safe(mot_path)
 
         if app_arr is None:
-            app_arr = np.zeros((1, 2048), dtype=np.float32)
+            app_arr = np.zeros((1, 768), dtype=np.float32)  # Sửa thành 768
+        else:
+            # Đảm bảo appearance feature có dimension 768
+            if app_arr.shape[-1] != 768:
+                if app_arr.shape[-1] > 768:
+                    app_arr = app_arr[:, :768]
+                else:
+                    pad_size = 768 - app_arr.shape[-1]
+                    app_arr = np.pad(app_arr, ((0,0), (0, pad_size)), mode='constant')
+
         if mot_arr is None:
-            mot_arr = np.zeros((1, 2048), dtype=np.float32)
+            mot_arr = np.zeros((1, 768), dtype=np.float32)  # Sửa thành 768
+        else:
+            # Đảm bảo motion feature có dimension 768
+            if mot_arr.shape[-1] != 768:
+                if mot_arr.shape[-1] > 768:
+                    mot_arr = mot_arr[:, :768]
+                else:
+                    pad_size = 768 - mot_arr.shape[-1]
+                    mot_arr = np.pad(mot_arr, ((0,0), (0, pad_size)), mode='constant')
 
         app_feat = torch.tensor(app_arr, dtype=torch.float32)
-        mot_feat = torch.tensor(mot_arr, dtype=torch.float32)   
+        mot_feat = torch.tensor(mot_arr, dtype=torch.float32)
 
         question = it["question"]
         choices = it["choices"]
