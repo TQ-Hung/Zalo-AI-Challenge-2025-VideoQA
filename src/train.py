@@ -41,6 +41,15 @@ def seed_everything(seed=SEED):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+def get_feature_dimension(feature_dir):
+    """Get actual feature dimension from files"""
+    files = [f for f in os.listdir(feature_dir) if f.endswith('.npy')]
+    if files:
+        sample_path = os.path.join(feature_dir, files[0])
+        sample_feat = np.load(sample_path)
+        return sample_feat.shape[-1]
+    return 768  # default
+
 def unfreeze_last_n(text_encoder, n=3):
     # freeze all first
     for param in text_encoder.parameters():
@@ -63,6 +72,12 @@ def unfreeze_last_n(text_encoder, n=3):
 
 def train():
     seed_everything()
+
+    # Auto-detect feature dimensions
+    app_dim = get_feature_dimension(APPEARANCE_DIR)
+    mot_dim = get_feature_dimension(MOTION_DIR)
+    feature_dim = max(app_dim, mot_dim)  # use the maximum to be safe
+    print(f"🔍 Detected feature dimension: {feature_dim}")
 
     # tokenizer + dataset
     tokenizer = AutoTokenizer.from_pretrained(MODEL_TEXT)
@@ -93,8 +108,8 @@ def train():
     ngpu = torch.cuda.device_count()
     print(f"Device: {device}, GPUs available: {ngpu}")
 
-    # build model and optionally unfreeze some BERT layers
-    model = EarlyFusionQA(text_model_name=MODEL_TEXT)
+    # build model with detected feature dimension
+    model = EarlyFusionQA(text_model_name=MODEL_TEXT, video_dim=feature_dim)
 
     # unfreeze last n layers on model.text_encoder BEFORE wrapping with DataParallel
     if hasattr(model, "text_encoder"):
@@ -201,7 +216,8 @@ def train():
                 "model": to_save,
                 "optimizer": optimizer.state_dict(),
                 "epoch": epoch,
-                "val_acc": val_acc
+                "val_acc": val_acc,
+                "feature_dim": feature_dim  # save the feature dimension for later use
             }, save_path)
             print("✅ Saved best checkpoint.")
         else:
