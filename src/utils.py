@@ -36,3 +36,4 @@ class EnsembleModel:
         
         avg_logits = torch.mean(torch.stack(all_logits), dim=0)
         return avg_logits
+    

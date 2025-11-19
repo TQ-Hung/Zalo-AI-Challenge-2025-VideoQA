@@ -13,9 +13,8 @@ from tqdm import tqdm
 from constants import DATA_JSON
 
 # ---------- Config ----------
-APPEARANCE_DIR = "/kaggle/working/features_v2/appearance_768"
-MOTION_DIR = "/kaggle/working/features_v2/motion_768"
-# train.py
+APPEARANCE_DIR = "/kaggle/working/features_v2/appearance"
+MOTION_DIR = "/kaggle/working/features_v2/motion"
 MODEL_TEXT = "vinai/phobert-base"
 BATCH_SIZE = 8
 MAX_LEN = 64
@@ -76,7 +75,12 @@ def train():
     # Auto-detect feature dimensions
     app_dim = get_feature_dimension(APPEARANCE_DIR)
     mot_dim = get_feature_dimension(MOTION_DIR)
-    feature_dim = max(app_dim, mot_dim)  # use the maximum to be safe
+    
+    if app_dim != mot_dim:
+        print(f"⚠️ Warning: Appearance dim ({app_dim}) != Motion dim ({mot_dim})")
+    
+    # Use the maximum dimension to be safe
+    feature_dim = max(app_dim, mot_dim)
     print(f"🔍 Detected feature dimension: {feature_dim}")
 
     # tokenizer + dataset
@@ -108,7 +112,7 @@ def train():
     ngpu = torch.cuda.device_count()
     print(f"Device: {device}, GPUs available: {ngpu}")
 
-    # build model with detected feature dimension
+    # build model with CORRECT feature dimension
     model = EarlyFusionQA(text_model_name=MODEL_TEXT, video_dim=feature_dim)
 
     # unfreeze last n layers on model.text_encoder BEFORE wrapping with DataParallel
@@ -177,6 +181,14 @@ def train():
             motion = batch["motion_feats"].to(device)
             labels = batch["labels"].to(device)
 
+            # Debug: print shapes for first batch
+            if step == 0 and epoch == 0:
+                print(f"DEBUG - Batch shapes:")
+                print(f"  input_ids: {input_ids.shape}")
+                print(f"  appearance: {appearance.shape}")
+                print(f"  motion: {motion.shape}")
+                print(f"  labels: {labels.shape}")
+
             with autocast(enabled=USE_FP16):
                 logits = model(input_ids, attention_mask, appearance, motion)
                 loss = torch.nn.functional.cross_entropy(logits, labels)
@@ -217,7 +229,7 @@ def train():
                 "optimizer": optimizer.state_dict(),
                 "epoch": epoch,
                 "val_acc": val_acc,
-                "feature_dim": feature_dim  # save the feature dimension for later use
+                "feature_dim": feature_dim  # Save the feature dimension for reference
             }, save_path)
             print("✅ Saved best checkpoint.")
         else:
