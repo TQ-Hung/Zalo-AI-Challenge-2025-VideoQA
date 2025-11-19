@@ -15,7 +15,7 @@ def inference_self_trained(model_path, output_file):
     # Auto-detect feature dimension
     feature_dim = 768  # default
     try:
-        appearance_dir = "/kaggle/working/features_test/appearance"
+        appearance_dir = "/kaggle/working/features_test/appearance_768"
         sample_files = [f for f in os.listdir(appearance_dir) if f.endswith('.npy')]
         if sample_files:
             sample_path = os.path.join(appearance_dir, sample_files[0])
@@ -59,8 +59,8 @@ def inference_self_trained(model_path, output_file):
     model.eval()
     
     # Configuration
-    APPEARANCE_DIR = "/kaggle/working/features_test/appearance"
-    MOTION_DIR = "/kaggle/working/features_test/motion"
+    APPEARANCE_DIR = "/kaggle/working/features_test/appearance_768appearance"
+    MOTION_DIR = "/kaggle/working/features_test/motion_768"
     TEST_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/public_test/public_test.json"
     BATCH_SIZE = 8
     
