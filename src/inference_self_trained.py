@@ -1,8 +1,9 @@
-# src/inference_self_trained.py
+# /kaggle/working/Zalo-AI-Challenge-2025-VideoQA/src/inference_self_trained.py
 import os
 import json
 import torch
 from tqdm import tqdm
+from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 from datasets import FeatureVideoQADataset, collate_fn_inference
 from model import EarlyFusionQA
@@ -12,7 +13,7 @@ def inference_self_trained(model_path, output_file):
     
     # Load model
     print(f"🤖 Loading self-trained model from {model_path} ...")
-    model = EarlyFusionQA(text_model_name="vinai/phobert-base").to(device)
+    model = EarlyFusionQA(text_model_name="vinai/phobert-base", video_dim=768).to(device)  # ADDED: video_dim=768
     ckpt = torch.load(model_path, map_location=device)
     
     # Handle DataParallel
@@ -29,8 +30,8 @@ def inference_self_trained(model_path, output_file):
     model.eval()
     
     # Configuration
-    APPEARANCE_DIR = "features_test/appearance"
-    MOTION_DIR = "features_test/motion"
+    APPEARANCE_DIR = "/kaggle/working/features_test/appearance"
+    MOTION_DIR = "/kaggle/working/features_test/motion"
     TEST_JSON = "/kaggle/input/zalo-ai-challenge-2025-roadbuddy/traffic_buddy_train+public_test/public_test/public_test.json"
     BATCH_SIZE = 8
     
@@ -69,9 +70,8 @@ def inference_self_trained(model_path, output_file):
 if __name__ == "__main__":
     # Choose which model to use for inference
     MODEL_PATHS = [
-        "checkpoints_iter_3/best_self_trained.pt",  # Last iteration
-        "checkpoints_ensemble/final_ensemble.pt",   # Ensemble
-        "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/checkpoints/best.pt"  # Original
+        "/kaggle/working/checkpoints_self_training/best_self_trained.pt",  # Self-trained model
+        "/kaggle/working/Zalo-AI-Challenge-2025-VideoQA/checkpoints/best.pt"  # Original model
     ]
     
     # Use the first available model
@@ -79,6 +79,7 @@ if __name__ == "__main__":
     for path in MODEL_PATHS:
         if os.path.exists(path):
             model_to_use = path
+            print(f"🎯 Using model: {path}")
             break
     
     if model_to_use:

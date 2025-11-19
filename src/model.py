@@ -1,15 +1,10 @@
-# src/model.py
-import torch
-import torch.nn as nn
-from transformers import AutoModel
-
-# src/model.py
+# /kaggle/working/Zalo-AI-Challenge-2025-VideoQA/src/model.py
 import torch
 import torch.nn as nn
 from transformers import AutoModel
 
 class TemporalAggregator(nn.Module):
-    def __init__(self, in_dim=2048, hidden_dim=512):
+    def __init__(self, in_dim=768, hidden_dim=512):  # CHANGED: default in_dim=768
         super().__init__()
         self.proj = nn.Linear(in_dim, hidden_dim)
         self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True, bidirectional=True)
@@ -29,15 +24,9 @@ class TemporalAggregator(nn.Module):
         return pooled  # (B, hidden_dim*2)
 
 class EarlyFusionQA(nn.Module):
-    """
-    EarlyFusionQA + Temporal Aggregation (BiGRU)
-    - Text: BERT encoder -> pooled representation
-    - Video: BiGRU over frame sequences (appearance + motion)
-    - Fusion: gated residual + transformer fusion
-    """
     def __init__(self, 
-                 text_model_name="bert-base-multilingual-cased",
-                 video_dim=2048,
+                 text_model_name="vinai/phobert-base",
+                 video_dim=768,  # CHANGED: default 768 instead of 2048
                  text_dim=768,
                  hidden_dim=512,
                  fusion_dim=512,
@@ -49,7 +38,7 @@ class EarlyFusionQA(nn.Module):
         self.video_dropout = nn.Dropout(dropout)
 
         # --- Temporal projection + GRU for video ---
-        self.video_proj = nn.Linear(video_dim, hidden_dim)
+        self.video_proj = nn.Linear(video_dim, hidden_dim)  # NOW: 768 -> 512
         self.video_gru = nn.GRU(
             input_size=hidden_dim,
             hidden_size=hidden_dim // 2,
@@ -58,7 +47,6 @@ class EarlyFusionQA(nn.Module):
             bidirectional=True
         )
         self.temporal_agg = TemporalAggregator(in_dim=hidden_dim, hidden_dim=hidden_dim // 2)
-        # self.video_norm = nn.LayerNorm(hidden_dim)
 
         # --- Text projection ---
         self.text_proj = nn.Sequential(
@@ -97,11 +85,14 @@ class EarlyFusionQA(nn.Module):
 
     def forward(self, input_ids, attention_mask, appearance, motion):
         """
-        appearance: (B, T_app, 2048)
-        motion: (B, T_mot, 2048)
+        appearance: (B, T_app, 768)  # CHANGED: 2048 -> 768
+        motion: (B, T_mot, 768)      # CHANGED: 2048 -> 768
         """
         B, C, L = input_ids.shape
         device = input_ids.device
+
+        # DEBUG: Print input shapes
+        # print(f"DEBUG Model - input_ids: {input_ids.shape}, appearance: {appearance.shape}, motion: {motion.shape}")
 
         # --- Text encoding ---
         flat_input_ids = input_ids.view(B * C, L)

@@ -78,9 +78,9 @@ class CombinedQADataset(Dataset):
         mot_arr = self._load_npy_safe(mot_path)
 
         if app_arr is None:
-            app_arr = np.zeros((1, 2048), dtype=np.float32)
+            app_arr = np.zeros((1, 768), dtype=np.float32)  # CHANGED: 2048 -> 768
         if mot_arr is None:
-            mot_arr = np.zeros((1, 2048), dtype=np.float32)
+            mot_arr = np.zeros((1, 768), dtype=np.float32)  # CHANGED: 2048 -> 768
 
         app_feat = torch.tensor(app_arr, dtype=torch.float32)
         mot_feat = torch.tensor(mot_arr, dtype=torch.float32)   
@@ -116,7 +116,7 @@ class CombinedQADataset(Dataset):
 
 # ---------- Config ----------
 MODEL_TEXT = "vinai/phobert-base"
-BATCH_SIZE = 8
+BATCH_SIZE = 4  # REDUCED BATCH SIZE FOR STABILITY
 MAX_LEN = 64
 LR = 2e-5
 EPOCHS = 20
@@ -125,12 +125,12 @@ OUTPUT_DIR = "/kaggle/working/checkpoints_self_training"
 VALID_SPLIT = 0.1
 SEED = 42
 
-USE_FP16 = True
+USE_FP16 = False  # DISABLED AMP FOR DEBUGGING
 ACCUM_STEPS = 2
 UNFREEZE_LAST_N = 3
 EARLYSTOP_PATIENCE = 3
 CLIP_NORM = 1.0
-NUM_WORKERS = 4
+NUM_WORKERS = 2  # REDUCED WORKERS
 
 # Self-training specific config
 PSEUDO_LABELS_JSON = "/kaggle/working/pseudo_labels.json"
@@ -187,6 +187,9 @@ def evaluate_self_training(model, loader, device):
             motion = batch["motion_feats"].to(device)
             labels = batch["labels"].to(device)
             
+            # DEBUG: Print shapes
+            print(f"DEBUG - Eval shapes: input_ids: {input_ids.shape}, appearance: {appearance.shape}, motion: {motion.shape}")
+            
             logits = model(input_ids, attention_mask, appearance, motion)
             preds = logits.argmax(dim=1)
             mask = labels >= 0
@@ -236,8 +239,8 @@ def train_with_pseudo_labels():
     ngpu = torch.cuda.device_count()
     print(f"🔧 Device: {device}, GPUs available: {ngpu}")
     
-    # Build model
-    model = EarlyFusionQA(text_model_name=MODEL_TEXT)
+    # Build model - FIX DIMENSION ISSUE
+    model = EarlyFusionQA(text_model_name=MODEL_TEXT, video_dim=768)  # CHANGED: video_dim=768
     
     # Unfreeze last n layers
     if hasattr(model, "text_encoder"):
@@ -309,18 +312,38 @@ def train_with_pseudo_labels():
             # Get pseudo-label flags
             is_pseudo = batch.get("is_pseudo", [False] * len(labels))
             
-            with autocast(enabled=USE_FP16):
+            # DEBUG: Print shapes for first batch
+            if step == 0:
+                print(f"DEBUG - Batch shapes:")
+                print(f"  input_ids: {input_ids.shape}")
+                print(f"  attention_mask: {attention_mask.shape}")
+                print(f"  appearance: {appearance.shape}")
+                print(f"  motion: {motion.shape}")
+                print(f"  labels: {labels.shape}")
+            
+            if USE_FP16:
+                with autocast(enabled=USE_FP16):
+                    logits = model(input_ids, attention_mask, appearance, motion)
+                    loss = weighted_loss(logits, labels, is_pseudo, PSEUDO_WEIGHT)
+                    loss = loss / ACCUM_STEPS
+                
+                scaler.scale(loss).backward()
+            else:
+                # Without AMP
                 logits = model(input_ids, attention_mask, appearance, motion)
                 loss = weighted_loss(logits, labels, is_pseudo, PSEUDO_WEIGHT)
                 loss = loss / ACCUM_STEPS
-            
-            scaler.scale(loss).backward()
+                loss.backward()
             
             if (step + 1) % ACCUM_STEPS == 0 or (step + 1) == len(train_loader):
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), CLIP_NORM)
-                scaler.step(optimizer)
-                scaler.update()
+                if USE_FP16:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), CLIP_NORM)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), CLIP_NORM)
+                    optimizer.step()
                 optimizer.zero_grad()
             
             total_loss += loss.item() * ACCUM_STEPS
